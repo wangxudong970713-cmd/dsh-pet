@@ -65,8 +65,11 @@ console.log('[build-exe] Assembling app bundle in resources/app...');
 const appDir = join(RELEASE_DIR, 'resources', 'app');
 mkdirSync(appDir, { recursive: true });
 
-// 拷贝 assets
-cpSync(join(PKG_ROOT, 'assets'), join(appDir, 'assets'), { recursive: true });
+// 拷贝 assets（过滤掉仅用于 README 展示的 65MB preview GIF）
+cpSync(join(PKG_ROOT, 'assets'), join(appDir, 'assets'), {
+  recursive: true,
+  filter: (src) => !src.includes('preview'),
+});
 
 // 拷贝 runtime/electron-helper
 cpSync(join(PKG_ROOT, 'runtime', 'electron-helper'), join(appDir, 'runtime', 'electron-helper'), {
