@@ -23,13 +23,14 @@
  * 就是 EPIPE，而 Electron 默认处理器只会弹框且不退出）。故有「宿主存活」一节：管道守卫 +
  * 宿主 PID 探测，宿主没了就自己退——见那里的注释。
  */
-const { app, BrowserWindow, ipcMain, screen, shell, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu } = require('electron');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore } = require('./pointer-target.js');
+const { standaloneService } = require('./standalone-service.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
 const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
 
@@ -46,39 +47,33 @@ const DPI_PROBE = process.env.DSH_PET_DPI_PROBE === '1';
 /** 探测进程的输出标记（父进程按它抓值） */
 const DPI_MARK = 'dsh-pet-primary-scale:';
 
+/** 单实例锁：避免重复双击拉起多个进程（探测模式跳过） */
+if (!DPI_PROBE) {
+  const gotSingleLock = app.requestSingleInstanceLock();
+  if (!gotSingleLock) {
+    app.quit();
+    process.exit(0);
+  }
+}
+
 // ---------- 宿主存活（issue #56）：管道断开 / 父进程消失 → 自己退出 ----------
 //
-// 【为什么必须自己退】宿主退出后，它在 helper 的 stdout/stderr 上握着的管道读端一起关闭；helper
-// 下一次写（bridge 协议行 —— 渲染端每秒至少一条 /broadcast 轮询）拿到 EPIPE。未处理的 'error'
-// 事件 = 未捕获异常，而 Electron 主进程自带的处理器只弹一个模态框、**且不退出**
-// （lib/browser/init.ts 原文注释："Don't quit on fatal error"）—— 桌宠就此卡死、进程赖着不走。
-// 真机实测（宿主存活、只切断 stdout 管道）：那次写之后主线程彻底停住，14 秒里一次心跳都没有，
-// 进程也一直没有退出。
-//
-// 两条路都要有，缺一不可：
-//   ① 管道守卫：任何一次写失败都不许变成异常；管道断开本身就是"宿主已死"的铁证 → 立刻退。
-//      它只在**上层真的写**的时候才触发；
-//   ② 宿主探测：每 HOST_POLL_MS 用 kill(pid, 0) 问一次宿主还在不在，ESRCH 即退。
-//      渲染端崩了/根本没起来时一次写都不会发生，只有 ② 能收敛。
-// 两条路都只经 exitForDeadHost()，且只退一次。
+// 宿主退出后，管道断开或父进程退出才退出；独立模式下未注入 DSH_PET_HOST_PID 则不探测。
 let hostGone = false;
-/** 宿主没了 → 立刻退出。这里**不能**再打日志：管道已经断了，写只会再踩一次同一个错误 */
 function exitForDeadHost() {
   if (hostGone) return;
   hostGone = true;
-  app.exit(0); // 宿主消失是"环境要求我退"，不是自身崩溃，退出码 0
+  app.exit(0);
 }
 
-// ① 管道守卫：必须赶在**任何一次写**之前装上（probePrimaryScale 失败就会往 stderr 写）
+// ① 管道守卫：必须赶在**任何一次写**之前装上
 for (const stream of [process.stdout, process.stderr]) {
   stream.on('error', (error) => {
     if (isBrokenPipeError(error)) exitForDeadHost();
-    // 其余流错误同样吞掉：Electron 的默认处理是弹模态框，任何流错误都不值得拿桌宠去换一个框
   });
 }
 
-// ② 宿主探测：DSH_PET_HOST_PID 由宿主 spawn 时注入；未注入/非法 → parseHostPid 给 0 → 不探测（不误退）。
-// DPI 探测实例是一次性短命进程（它的父进程是 helper 而不是宿主），不参与这套机制。
+// ② 宿主探测：DSH_PET_HOST_PID 由宿主 spawn 时注入；未注入/非法 → parseHostPid 给 0 → 不探测
 const HOST_PID = parseHostPid(process.env.DSH_PET_HOST_PID);
 if (!DPI_PROBE && HOST_PID > 0) {
   setInterval(() => {
@@ -218,28 +213,27 @@ function petScale() {
   return FORCED_SCALE > 0 && PRIMARY_SCALE > 0 ? base * (PRIMARY_SCALE / FORCED_SCALE) : base;
 }
 
-/** bridge 模式：DSH_PET_BRIDGE=1（宿主注入）。开启时注册 dsh-pet-bridge scheme + 管道转发 */
-const BRIDGE = process.env.DSH_PET_BRIDGE === '1';
-/** 协议行前缀（与 helper-process.ts 的 BRIDGE_PREFIX 一致） */
+/** bridge 模式：独立应用统一走 dsh-pet-bridge scheme 接管本地请求 */
+const BRIDGE = true;
+/** 协议行前缀 */
 const BRIDGE_PREFIX = 'dsh-pet-bridge:';
 
-if (BRIDGE) {
-  // 自定义 scheme：standard（可解析 URL）+ secure（按 https 对待）+ supportFetchAPI（fetch 可用）
-  // + stream（视频流）+ corsEnabled（让 CORS 规则生效，配合响应里的 ACAO 头放行 file:// 源页面）
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: 'dsh-pet-bridge',
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        stream: true,
-        bypassCSP: true,
-        corsEnabled: true,
-      },
+// 自定义 scheme：standard（可解析 URL）+ secure（按 https 对待）+ supportFetchAPI（fetch 可用）
+// + stream（视频流）+ corsEnabled（让 CORS 规则生效，配合响应里的 ACAO 头放行 file:// 源页面）
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'dsh-pet-bridge',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true,
+      corsEnabled: true,
     },
-  ]);
-}
+  },
+]);
+
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
@@ -312,9 +306,23 @@ const inputBusy = new Map();
 function petsFromEnv() {
   try {
     const raw = process.env.DSH_PET_PETS || '';
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length > 0) {
-      return arr.map((p, i) => ({
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length > 0) {
+        return arr.map((p, i) => ({
+          id: String(p?.id ?? `pet-${i}`),
+          size: Number(p?.size) > 0 ? Number(p.size) : 462,
+          index: i,
+        }));
+      }
+    }
+  } catch {
+    /* fallthrough */
+  }
+  try {
+    const merged = standaloneService.getMergedConfig();
+    if (Array.isArray(merged.pets) && merged.pets.length > 0) {
+      return merged.pets.map((p, i) => ({
         id: String(p?.id ?? `pet-${i}`),
         size: Number(p?.size) > 0 ? Number(p.size) : 462,
         index: i,
@@ -380,7 +388,7 @@ function deskGeometry() {
 function createPetWindows() {
   const geo = deskGeometry();
   const area = geo.hull;
-  const configUrl = process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config';
+  const configUrl = process.env.DSH_PET_CONFIG_URL || 'dsh-pet-bridge://dsh-pet/dsh-pet-7340/config';
   const pets = petsFromEnv();
   const scale = petScale();
   for (const pet of pets) {
@@ -462,7 +470,7 @@ function createPetWindows() {
       inputBusy.delete(win.id);
     });
     win
-      .loadFile('index.html', {
+      .loadFile(path.join(__dirname, 'index.html'), {
         query: {
           configUrl,
           bridge: BRIDGE ? '1' : '0',
@@ -488,81 +496,7 @@ function createPetWindows() {
   }
 }
 
-// ---------- bridge 协议（渲染端 custom scheme → 本进程 → 宿主 stdout JSON 行 + 本地回调） ----------
-// 渲染端的每个 fetch 都落到 dsh-pet-bridge://，protocol.handle 把请求以一行 JSON 写 stdout 转发宿主。
-// 宿主应答**不走近 0 号管道**：Electron 主进程在 Windows 上收不到 piped stdin（electron#4218），
-// 所以本进程开一个 127.0.0.1 随机端口 HTTP 回调（DSH 闸门只拦 DSH WebServer 路由，管不到这里）；
-// 请求行携带回调 URL，宿主处理完 POST 应答回来，按 id 唤醒等待中的请求。
-// 素材（webm/字体/光标）：宿主只回文件绝对路径，本进程自行读盘应答（二进制不过管道）。
-// 协议行统一前缀 BRIDGE_PREFIX，宿主侧按前缀区分协议与日志（console 输出也走 stdout）。
-
-let bridgeSeq = 0;
-/** id -> {resolve, reject}：一个请求对应宿主的一次回调应答 */
-const bridgePending = new Map();
-let bridgeCallbackUrl = '';
-
-/** 渲染端请求 → 宿主（请求行带回调 URL）；返回宿主应答（{status, contentType?, body?, file?}），超时抛错 */
-function bridgeRequest(method, url, body) {
-  return new Promise((resolve, reject) => {
-    const id = ++bridgeSeq;
-    bridgePending.set(id, { resolve, reject });
-    process.stdout.write(BRIDGE_PREFIX + JSON.stringify({ id, method, url, body, cb: bridgeCallbackUrl }) + '\n');
-    // 宿主若长期不应答（进程退出/宿主动作挂起）不无限挂起：45s 兜底（LLM 生成最长 30-60s）
-    setTimeout(() => {
-      const p = bridgePending.get(id);
-      if (!p) return;
-      bridgePending.delete(id);
-      p.reject(new Error('bridge request timeout'));
-    }, 45000).unref?.();
-  });
-}
-
-/** 把宿主回调应答（{id, status, ...}）派发给对应请求 */
-function bridgeResolve(resp) {
-  const p = resp && bridgePending.get(resp.id);
-  if (!p) return;
-  bridgePending.delete(resp.id);
-  p.resolve(resp);
-}
-
-/** 本地回调服务器：宿主把应答 POST 到这里（127.0.0.1 随机端口，绕开 stdin/DSH 闸门） */
-function startBridgeCallback() {
-  const http = require('node:http');
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/respond') {
-      res.writeHead(404, { 'content-type': 'text/plain' });
-      res.end('dsh-pet: not found');
-      return;
-    }
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      try {
-        bridgeResolve(JSON.parse(raw));
-        res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end('ok');
-      } catch {
-        res.writeHead(400, { 'content-type': 'text/plain' });
-        res.end('dsh-pet: bad payload');
-      }
-    });
-    req.on('error', () => {
-      res.writeHead(400, { 'content-type': 'text/plain' });
-      res.end('dsh-pet: bad payload');
-    });
-  });
-  server.on('error', (e) => {
-    console.error('[dsh-pet-desktop-helper] bridge callback server error:', String(e && e.message ? e.message : e));
-  });
-  server.listen(0, '127.0.0.1', () => {
-    const addr = server.address();
-    bridgeCallbackUrl = 'http://127.0.0.1:' + (addr && typeof addr === 'object' ? addr.port : 0) + '/respond';
-    console.error('[dsh-pet-desktop-helper] bridge callback: ' + bridgeCallbackUrl);
-  });
-  return server;
-}
-
-/** 处理一个渲染端请求：拼宿主请求行 → 等应答 → 组装 Response（素材读盘） */
+// ---------- 独立 bridge 请求接管（渲染端 custom scheme → standalone-service） ----------
 async function handleBridgeRequest(request) {
   const url = new URL(request.url); // dsh-pet-bridge://dsh-pet/dsh-pet-7340/...
   const method = request.method || 'GET';
@@ -570,20 +504,105 @@ async function handleBridgeRequest(request) {
   if (method === 'POST' || method === 'PUT') {
     body = await request.text();
   }
-  const resp = await bridgeRequest(method, url.pathname + url.search, body);
-  const headers = { 'access-control-allow-origin': '*' }; // 渲染端页面是 file:// 源，scheme 跨源需 CORS
+  const resp = await standaloneService.handleRoute(url.pathname + url.search, method, body);
+  const headers = {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'access-control-allow-headers': '*',
+  };
   if (resp.contentType) headers['content-type'] = resp.contentType;
   if (resp.file) {
-    // 素材：直接读盘返回（宿主已解析好绝对路径；带 range 让视频能拖动进度条）
     try {
+      const stat = await fsPromises.stat(resp.file);
+      const totalSize = stat.size;
+      const range = request.headers.get('range');
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        const chunkSize = end - start + 1;
+
+        const fileHandle = await fsPromises.open(resp.file, 'r');
+        const buffer = Buffer.alloc(chunkSize);
+        await fileHandle.read(buffer, 0, chunkSize, start);
+        await fileHandle.close();
+
+        headers['content-range'] = `bytes ${start}-${end}/${totalSize}`;
+        headers['accept-ranges'] = 'bytes';
+        headers['content-length'] = String(chunkSize);
+        return new Response(new Uint8Array(buffer), { status: 206, headers });
+      }
+
       const data = await fsPromises.readFile(resp.file);
+      headers['content-length'] = String(totalSize);
+      headers['accept-ranges'] = 'bytes';
       return new Response(new Uint8Array(data), { status: resp.status || 200, headers });
     } catch (e) {
-      console.error('[dsh-pet-desktop-helper] bridge file read failed:', resp.file, e);
+      console.error('[dsh-pet] bridge file read failed:', resp.file, e);
       return new Response('dsh-pet: asset read failed', { status: 500, headers });
     }
   }
   return new Response(resp.body ?? '', { status: resp.status || 200, headers });
+}
+
+let tray = null;
+let settingsWindow = null;
+
+function openSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 520,
+    height: 700,
+    title: '桌宠设置',
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#f8fafc',
+    icon: path.join(standaloneService.assetsRoot, 'pic', 'notify-done.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+  });
+}
+
+function resetAllPetsPosition() {
+  for (const win of windows.values()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('pet:reset-position');
+    }
+  }
+}
+
+function createTray() {
+  try {
+    const iconPath = path.join(standaloneService.assetsRoot, 'pic', 'notify-done.png');
+    tray = new Tray(iconPath);
+    const contextMenu = Menu.buildFromTemplate([
+      { label: '🐾 桌宠 (dsh-pet)', enabled: false },
+      { type: 'separator' },
+      { label: '⚙️ 设置中心', click: () => openSettingsWindow() },
+      { label: '📍 回到初始位置', click: () => resetAllPetsPosition() },
+      { type: 'separator' },
+      { label: '❌ 退出', click: () => app.quit() },
+    ]);
+    tray.setToolTip('dsh-pet 桌面宠物');
+    tray.setContextMenu(contextMenu);
+    tray.on('double-click', () => openSettingsWindow());
+  } catch (e) {
+    console.error('[dsh-pet] createTray failed:', e);
+  }
 }
 
 app.whenReady().then(() => {
@@ -605,21 +624,43 @@ app.whenReady().then(() => {
       petScale(),
   );
 
-  if (BRIDGE) {
-    // 自定义 scheme 接住渲染端全部请求（配置/余额/碎碎念/广播/素材）
-    protocol.handle('dsh-pet-bridge', (request) =>
-      handleBridgeRequest(request).catch((e) => {
-        console.error('[dsh-pet-desktop-helper] bridge handler error:', String(e && e.message ? e.message : e));
-        return new Response('dsh-pet: bridge error', {
-          status: 502,
-          headers: { 'access-control-allow-origin': '*' },
-        });
-      }),
-    );
-    startBridgeCallback(); // 宿主应答回调服务器（stdin 在 Electron 主进程不可用，改走本地 HTTP）
-  }
+  app.on('second-instance', () => {
+    openSettingsWindow();
+  });
 
+  // 自定义 scheme 接住渲染端全部请求（配置/余额/碎碎念/对话/素材）
+  protocol.handle('dsh-pet-bridge', (request) =>
+    handleBridgeRequest(request).catch((e) => {
+      console.error('[dsh-pet] bridge handler error:', String(e && e.message ? e.message : e));
+      return new Response('dsh-pet: bridge error', {
+        status: 502,
+        headers: { 'access-control-allow-origin': '*' },
+      });
+    }),
+  );
+
+  createTray();
   createPetWindows();
+
+  // IPC 接口：设置与窗口
+  ipcMain.on('pet:open-settings', () => openSettingsWindow());
+  ipcMain.on('pet:reset-position', () => resetAllPetsPosition());
+  ipcMain.handle('settings:get', async () => {
+    return standaloneService.getUserConfig();
+  });
+  ipcMain.handle('settings:save', async (event, newSettings) => {
+    standaloneService.saveUserConfig(newSettings);
+    for (const win of windows.values()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('pet:reload-config');
+      }
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('settings:test', async (event, params) => {
+    return await standaloneService.testConnection(params);
+  });
+
 
   // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
   ipcMain.on('pet:set-bounds', (event, bounds) => {

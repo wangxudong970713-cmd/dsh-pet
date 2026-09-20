@@ -1007,9 +1007,9 @@ class PetSprite {
     e.preventDefault();
     this.stopThrow(); // 菜单弹出前停住飞行中的宠物
     this.stopMove(); // 菜单悬停期间宠物不漫游
-    // 桌面专属工具根项（打开网站 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
+    // 桌面专属工具根项（⚙️ 设置 / 查看余额 / 碎碎念 / 对话 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
     // 碎碎念/对话项无条件显示：手动触发不受 whisperEnabled 限制（该字段只影响自动周期轮询）
-    const tools = [{ label: '打开网站', action: 'open-site' }];
+    const tools = [{ label: '⚙️ 设置', action: 'settings' }];
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
       { label: '碎碎念', action: 'whisper' },
@@ -1042,6 +1042,12 @@ class PetSprite {
   onMenuAction(leaf) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
+    if (leaf.action === 'settings') {
+      if (window.petBridge && window.petBridge.openSettings) {
+        window.petBridge.openSettings();
+      }
+      return;
+    }
     if (leaf.action === 'open-site') {
       if (window.petBridge) window.petBridge.openDshSite(ORIGIN); // 系统默认浏览器打开（等效 Ctrl+点击链接）
       return;
@@ -1119,6 +1125,10 @@ class PetSprite {
         if (state.ok) {
           this.showWhisper(state.text, state.image);
         } else {
+          const msg = state.reason === 'provider-missing'
+            ? '还没配置 API 密钥哦，请右键打开设置~'
+            : ('碎碎念失败啦：' + (state.message || state.reason));
+          this.showWhisper(msg);
           console.warn('[dsh-pet] 菜单碎碎念失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
         }
       })

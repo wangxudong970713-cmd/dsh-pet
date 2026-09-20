@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>桌宠设置中心</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <div class="settings-container">
+      <!-- 头部 -->
+      <header class="settings-header">
+        <img src="../../assets/pic/notify-done.png" alt="icon" class="header-avatar" />
+        <div class="header-text">
+          <h1>桌宠设置中心</h1>
+          <p>配置 AI 模型密钥与桌宠日常行为</p>
+        </div>
+      </header>
+
+      <!-- 主要内容表单 -->
+      <main class="settings-body">
+        <!-- 卡片 1: API 与大模型配置 -->
+        <section class="card">
+          <div class="card-title">
+            <span class="icon">🔑</span>
+            <h2>大模型与密钥配置</h2>
+          </div>
+
+          <div class="form-group">
+            <label for="apiKey">API Key (密钥) <span class="required">*</span></label>
+            <div class="input-with-action">
+              <input
+                type="password"
+                id="apiKey"
+                placeholder="例如: sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+                autocomplete="off"
+              />
+              <button type="button" id="toggleApiKey" class="btn-icon" title="显示/隐藏明文">
+                👁️
+              </button>
+            </div>
+            <span class="form-tip">支持 DeepSeek 官方或任何兼容 OpenAI 格式的服务商密钥。</span>
+          </div>
+
+          <div class="form-group">
+            <label for="baseUrl">接口地址 (Base URL)</label>
+            <input
+              type="text"
+              id="baseUrl"
+              placeholder="https://api.deepseek.com"
+              value="https://api.deepseek.com"
+            />
+            <span class="form-tip">默认 DeepSeek 官方；可填写 SiliconFlow、Ollama、OneAPI 等端点。</span>
+          </div>
+
+          <div class="form-group">
+            <label for="model">模型名称 (Model)</label>
+            <input type="text" id="model" placeholder="deepseek-chat" value="deepseek-chat" />
+            <div class="quick-chips">
+              <span class="chip" data-model="deepseek-chat">deepseek-chat</span>
+              <span class="chip" data-model="deepseek-reasoner">deepseek-reasoner</span>
+              <span class="chip" data-model="gpt-4o-mini">gpt-4o-mini</span>
+            </div>
+          </div>
+
+          <div class="test-row">
+            <button type="button" id="btnTest" class="btn-secondary">⚡ 测试连接</button>
+            <span id="testStatus" class="test-status"></span>
+          </div>
+        </section>
+
+        <!-- 卡片 2: 桌宠个性与行为 -->
+        <section class="card">
+          <div class="card-title">
+            <span class="icon">🐾</span>
+            <h2>桌宠日常与行为</h2>
+          </div>
+
+          <div class="form-group">
+            <div class="label-with-val">
+              <label for="petSize">桌宠尺寸 (像素)</label>
+              <span id="sizeVal" class="val-badge">462 px</span>
+            </div>
+            <input type="range" id="petSize" min="200" max="640" step="10" value="462" />
+          </div>
+
+          <div class="form-group switch-group">
+            <div class="switch-info">
+              <span class="switch-label">开启自动碎碎念</span>
+              <span class="switch-desc">桌宠会根据间隔时间自己说话</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="whisperEnabled" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group" id="whisperIntervalGroup">
+            <label for="whisperInterval">碎碎念间隔 (秒)</label>
+            <input type="number" id="whisperInterval" min="30" max="7200" step="30" value="300" />
+            <span class="form-tip">建议 180~600 秒（3~10分钟）一次，避免过度调用。</span>
+          </div>
+
+          <div class="form-group switch-group">
+            <div class="switch-info">
+              <span class="switch-label">碎碎念表情包配图</span>
+              <span class="switch-desc">碎碎念时随机配一张表情包</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="whisperImageEnabled" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group switch-group">
+            <div class="switch-info">
+              <span class="switch-label">对话表情包配图</span>
+              <span class="switch-desc">与桌宠聊天时由 AI 智能挑选表情包</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="chatImageEnabled" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="whisperPrompt">人设系统提示词 (Prompt)</label>
+            <textarea
+              id="whisperPrompt"
+              rows="3"
+              placeholder="你是主人桌面上的Q版小女仆，用简短可爱温柔的口吻说话。20字以内。"
+            ></textarea>
+            <span class="form-tip">对话与碎碎念共同遵循的人设设定。</span>
+          </div>
+        </section>
+      </main>
+
+      <!-- 底部保存按钮 -->
+      <footer class="settings-footer">
+        <span id="saveStatus" class="save-status"></span>
+        <div class="btn-group">
+          <button type="button" id="btnReset" class="btn-text">重置默认</button>
+          <button type="button" id="btnSave" class="btn-primary">💾 保存并生效</button>
+        </div>
+      </footer>
+    </div>
+
+    <script src="./settings.js"></script>
+  </body>
+</html>

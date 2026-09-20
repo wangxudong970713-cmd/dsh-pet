@@ -31,6 +31,8 @@ npm-debug.log*
 
 # ── 临时/备份目录 ──
 temp/
+release/
+dsh-pet/release/
 
 # ── dsh-pet 构建产物（全部由 src/ 构建生成，不入仓库；克隆后先 npm run prepare:webm）──
 #   lib/                      tsdown bundle（lib/index.js、lib/client.js）+ tsc 声明（lib/types/*.d.ts，npm run types）

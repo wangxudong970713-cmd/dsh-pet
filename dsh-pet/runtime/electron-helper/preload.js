@@ -52,4 +52,26 @@ contextBridge.exposeInMainWorld('petBridge', {
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
   },
+  // 打开设置面板
+  openSettings() {
+    ipcRenderer.send('pet:open-settings');
+  },
+  // 重置位置
+  resetPosition() {
+    ipcRenderer.send('pet:reset-position');
+  },
+  onResetPosition(cb) {
+    ipcRenderer.on('pet:reset-position', () => cb());
+  },
+  // 配置热更新通知
+  onReloadConfig(cb) {
+    ipcRenderer.on('pet:reload-config', () => cb());
+  },
 });
+
+contextBridge.exposeInMainWorld('settingsBridge', {
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  saveSettings: (cfg) => ipcRenderer.invoke('settings:save', cfg),
+  testConnection: (params) => ipcRenderer.invoke('settings:test', params),
+});
+

@@ -120,6 +120,20 @@ if (window.petBridge && window.petBridge.onDisplays) {
   });
 }
 
+// 托盘菜单「回到初始位置」
+if (window.petBridge && window.petBridge.onResetPosition) {
+  window.petBridge.onResetPosition(() => {
+    for (const s of sprites) s.goHome();
+  });
+}
+
+// 设置变更后热重载配置
+if (window.petBridge && window.petBridge.onReloadConfig) {
+  window.petBridge.onReloadConfig(() => {
+    void boot();
+  });
+}
+
 // 窗口内容区尺寸异常时按当前位置重新规整。
 // 守卫：拖拽/飞行/漫游中**绝不**重设位置——这三种状态下位置由输入或物理驱动，而 position()
 // 会把宠物拉回 customPos（上一次的落点）。跨屏时 Windows 会因 WM_DPICHANGED 主动改窗口尺寸，
