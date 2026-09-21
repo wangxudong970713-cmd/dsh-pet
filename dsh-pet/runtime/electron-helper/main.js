@@ -585,6 +585,20 @@ function resetAllPetsPosition() {
   }
 }
 
+function applyAutoStart(enabled) {
+  try {
+    if (process.platform === 'win32') {
+      app.setLoginItemSettings({
+        openAtLogin: Boolean(enabled),
+        path: process.execPath,
+        args: [],
+      });
+    }
+  } catch (e) {
+    console.error('[dsh-pet] applyAutoStart error:', e);
+  }
+}
+
 function createTray() {
   try {
     const iconPath = path.join(standaloneService.assetsRoot, 'pic', 'notify-done.png');
@@ -642,13 +656,39 @@ app.whenReady().then(() => {
   createTray();
   createPetWindows();
 
+  // 开机自启路径自愈检查：若配置中开启了自启，刷新一次当前 exe 绝对路径
+  try {
+    const userCfg = standaloneService.getUserConfig();
+    if (userCfg && userCfg.autoStart && process.platform === 'win32') {
+      applyAutoStart(true);
+    }
+  } catch (e) {
+    console.warn('[dsh-pet] startup auto-start sync skipped:', e);
+  }
+
   // IPC 接口：设置与窗口
   ipcMain.on('pet:open-settings', () => openSettingsWindow());
   ipcMain.on('pet:reset-position', () => resetAllPetsPosition());
   ipcMain.handle('settings:get', async () => {
-    return standaloneService.getUserConfig();
+    const userCfg = standaloneService.getUserConfig();
+    let autoStart = Boolean(userCfg.autoStart);
+    try {
+      if (process.platform === 'win32') {
+        const login = app.getLoginItemSettings();
+        autoStart = userCfg.autoStart !== undefined ? Boolean(userCfg.autoStart) : login.openAtLogin;
+      }
+    } catch {
+      /* fallthrough */
+    }
+    return {
+      ...userCfg,
+      autoStart,
+    };
   });
   ipcMain.handle('settings:save', async (event, newSettings) => {
+    if (newSettings && typeof newSettings.autoStart === 'boolean') {
+      applyAutoStart(newSettings.autoStart);
+    }
     standaloneService.saveUserConfig(newSettings);
     for (const win of windows.values()) {
       if (!win.isDestroyed()) {

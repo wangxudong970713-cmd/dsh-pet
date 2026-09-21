@@ -118,6 +118,7 @@ class StandaloneService {
       apiKey: '',
       baseUrl: 'https://api.deepseek.com',
       model: 'deepseek-chat',
+      autoStart: false,
     };
   }
 
@@ -137,6 +138,7 @@ class StandaloneService {
     if (user.chatMemoryRounds !== undefined) merged.chatMemoryRounds = user.chatMemoryRounds;
     if (user.whisperImageEnabled !== undefined) merged.whisperImageEnabled = user.whisperImageEnabled;
     if (user.chatImageEnabled !== undefined) merged.chatImageEnabled = user.chatImageEnabled;
+    if (user.autoStart !== undefined) merged.autoStart = user.autoStart;
     if (user.physics !== undefined) merged.physics = { ...(merged.physics || {}), ...user.physics };
 
     // 合并宠物列表

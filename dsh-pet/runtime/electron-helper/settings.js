@@ -21,6 +21,7 @@ const whisperIntervalGroup = document.getElementById('whisperIntervalGroup');
 const whisperImageEnabledInput = document.getElementById('whisperImageEnabled');
 const chatImageEnabledInput = document.getElementById('chatImageEnabled');
 const whisperPromptInput = document.getElementById('whisperPrompt');
+const autoStartEnabledInput = document.getElementById('autoStartEnabled');
 
 const btnSave = document.getElementById('btnSave');
 const btnReset = document.getElementById('btnReset');
@@ -63,6 +64,8 @@ function applyFormValues(cfg) {
   whisperPromptInput.value =
     cfg.whisperPrompt ||
     '你是主人桌面上的Q版小女仆，用简短可爱温柔的口吻说话。20字以内。';
+
+  autoStartEnabledInput.checked = Boolean(cfg.autoStart);
 }
 
 // 2. 交互事件监听
@@ -138,6 +141,7 @@ btnSave.addEventListener('click', async () => {
   const whisperImageEnabled = whisperImageEnabledInput.checked;
   const chatImageEnabled = chatImageEnabledInput.checked;
   const whisperPrompt = whisperPromptInput.value.trim();
+  const autoStart = autoStartEnabledInput.checked;
 
   const pets = (currentConfig.pets && currentConfig.pets.length > 0)
     ? currentConfig.pets.map((p, idx) => ({
@@ -166,6 +170,7 @@ btnSave.addEventListener('click', async () => {
     whisperPrompt,
     whisperImageEnabled,
     chatImageEnabled,
+    autoStart,
     pets,
   };
 
@@ -196,6 +201,7 @@ btnReset.addEventListener('click', () => {
       model: 'deepseek-chat',
       whisperImageEnabled: false,
       chatImageEnabled: false,
+      autoStart: false,
       whisperPrompt: '你是主人桌面上的Q版小女仆，用简短可爱温柔的口吻说话。20字以内。',
       pets: [{ id: 'main', size: 462, whisperEnabled: false, eventsRefreshSec: { whisper: 300 } }],
     });
