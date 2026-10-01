@@ -118,7 +118,20 @@ export function createMemeImage(name?: string, base = '/dsh-pet-7340'): HTMLImag
   injectMemeBubbleCss();
   const img = document.createElement('img');
   img.className = MEME_IMG_CLASS;
-  img.src = memeImageUrl(key, base);
+  if (
+    key.startsWith('http://') ||
+    key.startsWith('https://') ||
+    key.startsWith('data:') ||
+    key.startsWith('dsh-pet-bridge://')
+  ) {
+    img.src = key;
+  } else if (key.startsWith('/')) {
+    img.src = key;
+  } else if (key.startsWith('wechat/image?')) {
+    img.src = base + '/' + key;
+  } else {
+    img.src = memeImageUrl(key, base);
+  }
   img.alt = key;
   return img;
 }

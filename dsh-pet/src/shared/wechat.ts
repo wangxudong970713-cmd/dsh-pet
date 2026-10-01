@@ -84,7 +84,8 @@ export const DEFAULT_WECHAT_CONFIG: WechatConfig = {
     '1. 用主人的口吻，像本人随手打字，不要客套开场、不要解释你在做什么；',
     '2. 只输出这一条消息本身，不要引号、不要前缀（如「回复：」）、不要多段排版；',
     '3. 长度贴近主人平时的习惯，通常一到两句话；',
-    '4. 对方是 {name}，历史消息里主人自己说的话（me / 主人）就是口吻样本。',
+    '4. 对方是 {name}，历史消息里主人自己说的话（me / 主人）就是口吻样本；',
+    '5. 若对方发来了图片，结合图片画面中的视觉细节与当下语境自然回复。',
   ].join('\n'),
 };
 
@@ -182,6 +183,13 @@ export interface WechatSession extends WechatChatRef {
   timestamp: number;
 }
 
+export interface WechatMediaItem {
+  type: 'image' | 'file' | 'video';
+  decodedPath?: string;
+  url?: string;
+  exists?: boolean;
+}
+
 export interface WechatMessage {
   /** `YYYY-MM-DD HH:MM`（bridge 已格式化） */
   time: string;
@@ -189,6 +197,21 @@ export interface WechatMessage {
   label: string;
   text: string;
   isSelf: boolean;
+  media?: WechatMediaItem;
+}
+
+export type MultimodalPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url?: string; path?: string } };
+
+export interface DraftChatMessage {
+  role: 'user' | 'assistant';
+  content: string | MultimodalPart[];
+}
+
+export interface BuildDraftMessagesOptions {
+  /** 允许注入真实多模态图片的最大张数（优先取最新图片，默认 2） */
+  maxImages?: number;
 }
 
 /** 公众号 / 服务号：username 以 gh_ 开头（core/contacts.py 的 is_subscription 同语义） */
@@ -367,24 +390,55 @@ export function pickDraftTarget(
   return sortSessions(candidates)[0];
 }
 
-/** 把 bridge 的历史行转成 LLM 消息：主人自己 → assistant，对方 → user（群聊保留发送者前缀）。 */
+/** 把 bridge 的历史行转成 LLM 消息：主人自己 → assistant，对方 → user（群聊保留发送者前缀），支持图片消息多模态注入。 */
 export function buildDraftMessages(
   chat: WechatChatRef,
   history: readonly WechatMessage[],
   selfLabel = 'me',
-): Array<{ role: 'user' | 'assistant'; content: string }> {
+  options: BuildDraftMessagesOptions = {},
+): DraftChatMessage[] {
   const tail = history.slice(-2000);
-  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-  for (const m of tail) {
+  const out: DraftChatMessage[] = [];
+  const maxImages = Number.isFinite(Number(options.maxImages)) ? Math.max(0, Number(options.maxImages)) : 2;
+
+  // 预扫描倒数最近的具备有效图片路径的消息索引，仅将这些索引标记为视觉多模态注入
+  const activeImageIndices = new Set<number>();
+  if (maxImages > 0) {
+    let count = 0;
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const m = tail[i];
+      if (m.media?.type === 'image' && (m.media.decodedPath || m.media.url)) {
+        activeImageIndices.add(i);
+        count++;
+        if (count >= maxImages) break;
+      }
+    }
+  }
+
+  for (let i = 0; i < tail.length; i++) {
+    const m = tail[i];
     const text = String(m.text ?? '').trim();
-    if (!text) continue;
+    const hasMedia = activeImageIndices.has(i);
+    if (!text && !hasMedia) continue;
+
     const isSelf = m.isSelf || m.label === selfLabel;
-    if (isSelf) {
-      out.push({ role: 'assistant', content: text });
-    } else if (chat.isGroup && m.label) {
-      out.push({ role: 'user', content: `${m.label}: ${text}` });
+    const role: 'user' | 'assistant' = isSelf ? 'assistant' : 'user';
+
+    const textContent =
+      !isSelf && chat.isGroup && m.label ? `${m.label}: ${text || '[图片]'}` : text || '[图片]';
+
+    if (hasMedia) {
+      const imgPath = m.media?.decodedPath;
+      const imgUrl = m.media?.url;
+      const parts: MultimodalPart[] = [{ type: 'text', text: textContent }];
+      if (imgPath) {
+        parts.push({ type: 'image_url', image_url: { path: imgPath } });
+      } else if (imgUrl) {
+        parts.push({ type: 'image_url', image_url: { url: imgUrl } });
+      }
+      out.push({ role, content: parts });
     } else {
-      out.push({ role: 'user', content: text });
+      out.push({ role, content: textContent });
     }
   }
   // 最后一条必须是 user 才能让模型「接着回」：主人刚说完话时补一句提示

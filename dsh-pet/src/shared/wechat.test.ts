@@ -467,6 +467,45 @@ describe('buildDraftMessages —— 历史 → 模型消息', () => {
   test('空历史 → 空消息数组（调用方据此放弃起草）', () => {
     assert.deepEqual(buildDraftMessages(c, []), []);
   });
+
+  test('包含有效图片时组装为多模态格式，且限制注入最新的图片数量', () => {
+    const history = [
+      {
+        time: 't1',
+        label: '小明',
+        text: '[图片]',
+        isSelf: false,
+        media: { type: 'image' as const, decodedPath: 'C:\\path\\img1.jpg', exists: true },
+      },
+      { time: 't2', label: 'me', text: '看到了', isSelf: true },
+      {
+        time: 't3',
+        label: '小明',
+        text: '[图片] 请看最新图',
+        isSelf: false,
+        media: { type: 'image' as const, decodedPath: 'C:\\path\\img2.jpg', exists: true },
+      },
+    ];
+    // 默认 maxImages = 2，两张图片都能注入
+    const msgs = buildDraftMessages(c, history, 'me');
+    assert.equal(msgs.length, 3);
+    assert.ok(Array.isArray(msgs[0].content));
+    assert.deepEqual(msgs[0].content, [
+      { type: 'text', text: '[图片]' },
+      { type: 'image_url', image_url: { path: 'C:\\path\\img1.jpg' } },
+    ]);
+    assert.equal(msgs[1].content, '看到了');
+    assert.ok(Array.isArray(msgs[2].content));
+    assert.deepEqual(msgs[2].content, [
+      { type: 'text', text: '[图片] 请看最新图' },
+      { type: 'image_url', image_url: { path: 'C:\\path\\img2.jpg' } },
+    ]);
+
+    // 若限制 maxImages = 1，则较早的 img1 降级为纯文本，仅最新的 img2 注入图片多模态
+    const msgsLimited = buildDraftMessages(c, history, 'me', { maxImages: 1 });
+    assert.equal(msgsLimited[0].content, '[图片]');
+    assert.ok(Array.isArray(msgsLimited[2].content));
+  });
 });
 
 describe('buildDraftSystemPrompt / cleanDraft —— 提示词与输出清洗', () => {

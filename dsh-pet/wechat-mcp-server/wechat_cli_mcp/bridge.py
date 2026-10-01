@@ -385,6 +385,7 @@ def parse_history_lines(lines, self_label: str = "me"):
 
     ``isSelf`` 由 ``label == self_label`` 判定；历史上"自己"的标签固定来自
     ``display_name_for_username``（对自己返回 ``me``）。
+    若检测到图片媒体标记，抽取结构化 ``media`` 字段。
     """
     parsed = []
     for raw in lines or []:
@@ -395,14 +396,27 @@ def parse_history_lines(lines, self_label: str = "me"):
             parsed.append({"time": "", "label": "", "text": raw, "isSelf": False})
             continue
         label = (match.group("label") or "").strip()
-        parsed.append(
-            {
-                "time": match.group("time"),
-                "label": label,
-                "text": match.group("text"),
-                "isSelf": bool(label) and label == self_label,
-            }
-        )
+        text_content = match.group("text") or ""
+        msg_obj = {
+            "time": match.group("time"),
+            "label": label,
+            "text": text_content,
+            "isSelf": bool(label) and label == self_label,
+        }
+        if text_content.startswith("[图片]"):
+            path_part = text_content[len("[图片]"):].strip()
+            m_path = re.match(r"^(.*?)(?:\s*\([^\)]*\))?$", path_part)
+            clean_path = m_path.group(1).strip() if m_path else path_part
+            file_missing = "不存在" in path_part or "not exist" in path_part.lower() or not os.path.isfile(clean_path)
+            if clean_path and not clean_path.startswith("(local_id=") and not clean_path.lower().endswith(".dat"):
+                ext = os.path.splitext(clean_path)[1].lower()
+                if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+                    msg_obj["media"] = {
+                        "type": "image",
+                        "decodedPath": clean_path,
+                        "exists": os.path.isfile(clean_path),
+                    }
+        parsed.append(msg_obj)
     return parsed
 
 
@@ -603,7 +617,7 @@ def cmd_history(args):
         limit=limit,
         offset=0,
         msg_type_filter=None,
-        resolve_media=False,
+        resolve_media=True,
         db_dir=ctx.db_dir,
     )
     messages = parse_history_lines(lines, self_label)

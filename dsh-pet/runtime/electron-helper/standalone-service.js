@@ -37,6 +37,9 @@ const MIME = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
   '.ttf': 'font/ttf',
   '.woff2': 'font/woff2',
   '.json': 'application/json',
@@ -101,6 +104,40 @@ function deepMergePlain(base, patch) {
 /** 统一的 JSON 200 响应 */
 function json200(payload) {
   return { status: 200, contentType: 'application/json', body: JSON.stringify(payload) };
+}
+
+/**
+ * 解包并格式化 fetch 产生的网络异常与底层错误（Node.js undici 会将底层真实错误包在 err.cause 中）
+ * @param {any} err
+ * @returns {string}
+ */
+function formatFetchError(err) {
+  if (!err) return '未知错误';
+  if (err.name === 'AbortError' || err.code === 'ABORT_ERR') {
+    return '请求超时（模型响应时间过长）';
+  }
+  let msg = err.message || String(err);
+  const cause = err.cause;
+  if (cause) {
+    const code = cause.code || cause.name || '';
+    const causeMsg = cause.message || '';
+    if (code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT') {
+      return `网络连接超时 (${code})`;
+    }
+    if (code === 'ECONNREFUSED') {
+      return `网络连接被拒绝，API服务未启动或端口不通 (${code})`;
+    }
+    if (code === 'ECONNRESET') {
+      return `网络连接被远程服务器重置 (${code})`;
+    }
+    if (code === 'ENOTFOUND') {
+      return `域名解析失败，请检查网络或地址 (${code})`;
+    }
+    if (causeMsg && causeMsg !== msg) {
+      return `${msg} (${causeMsg})`;
+    }
+  }
+  return msg;
 }
 
 class StandaloneService {
@@ -278,46 +315,76 @@ class StandaloneService {
     }
     reqMessages.push(...messages);
 
-    const controller = new AbortController();
     const timeoutMs =
       Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 45000;
     // 起草微信回复要更像本人，因此允许调用方压低随机性（默认仍是 0.9）
     const temperature = Number.isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.9;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const maxRetries = Number.isInteger(opts.retries) && opts.retries >= 0 ? opts.retries : 2;
 
-    try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: reqMessages,
-          temperature,
-          max_tokens: maxTokens,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(`API 响应错误 HTTP ${resp.status}: ${errText.slice(0, 150)}`);
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: reqMessages,
+            temperature,
+            max_tokens: maxTokens,
+            stream: false,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          const status = resp.status;
+          const statusError = new Error(`API 响应错误 HTTP ${status}: ${errText.slice(0, 150)}`);
+          // 4xx 系列客户端错误（除 429 限流外）属于请求本身问题，重试无益
+          if (status >= 400 && status < 500 && status !== 429) {
+            throw statusError;
+          }
+          throw statusError;
+        }
+
+        const json = await resp.json();
+        const reply = json?.choices?.[0]?.message?.content?.trim();
+        if (!reply) {
+          throw new Error('模型未返回内容');
+        }
+        return reply;
+      } catch (e) {
+        clearTimeout(timeout);
+        lastError = e;
+
+        const formatted = formatFetchError(e);
+        const isClientAuthOrParamError =
+          typeof e.message === 'string' &&
+          (e.message.includes('HTTP 401') ||
+            e.message.includes('HTTP 403') ||
+            e.message.includes('HTTP 400') ||
+            e.message.includes('HTTP 404'));
+
+        if (attempt < maxRetries && !isClientAuthOrParamError) {
+          const delay = (attempt + 1) * 1200;
+          console.warn(`[dsh-pet] LLM 调用失败（${formatted}），${delay}ms 后进行第 ${attempt + 1}/${maxRetries} 次重试...`);
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        throw new Error(formatted);
       }
-
-      const json = await resp.json();
-      const reply = json?.choices?.[0]?.message?.content?.trim();
-      if (!reply) {
-        throw new Error('模型未返回内容');
-      }
-      return reply;
-    } catch (e) {
-      clearTimeout(timeout);
-      throw e;
     }
+
+    throw new Error(formatFetchError(lastError));
   }
 
   /** 生成碎碎念 */
@@ -713,19 +780,101 @@ class StandaloneService {
     };
   }
 
-  /** 受控的通用补全：messages 由渲染层用共享层拼好，这里只做参数收敛 */
+  /** 安全读取本地解密图片并转为 Base64 Data URL */
+  async encodeImageToBase64DataUrl(filePath) {
+    try {
+      if (!filePath || typeof filePath !== 'string') return null;
+      const cleanPath = filePath.replace(/^file:\/\/\/?/, '');
+      if (!fs.existsSync(cleanPath)) return null;
+      const stat = await fs.promises.stat(cleanPath);
+      // 保护机制：小于 16 字节或超过 10MB 的超大文件跳过 Base64 编码，防止内存与 token 暴涨
+      if (stat.size < 16 || stat.size > 10 * 1024 * 1024) return null;
+      const ext = path.extname(cleanPath).toLowerCase();
+      const buf = await fs.promises.readFile(cleanPath);
+
+      // 严格魔数校验，杜绝损坏文件或假图片进入大模型请求导致 400
+      let valid = false;
+      let realMime = MIME[ext] || 'image/jpeg';
+      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+        valid = true;
+        realMime = 'image/jpeg';
+      } else if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+        valid = true;
+        realMime = 'image/png';
+      } else if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+        valid = true;
+        realMime = 'image/gif';
+      } else if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') {
+        valid = true;
+        realMime = 'image/webp';
+      } else if (buf[0] === 0x42 && buf[1] === 0x4d && stat.size >= 26) {
+        const dibSize = buf.readUInt32LE(14);
+        if ([12, 40, 52, 56, 64, 108, 124].includes(dibSize)) {
+          valid = true;
+          realMime = 'image/bmp';
+        }
+      }
+
+      if (!valid) {
+        console.warn('[standalone-service] image file failed magic bytes validation, skipping base64:', cleanPath);
+        return null;
+      }
+
+      return `data:${realMime};base64,${buf.toString('base64')}`;
+    } catch (err) {
+      console.error('[standalone-service] encode image failed:', err);
+      return null;
+    }
+  }
+
+  /** 受控的通用补全：messages 由渲染层用共享层拼好，这里做参数收敛与多模态规范化 */
   async completeLlm({ system, messages, maxTokens, temperature } = {}) {
-    const list = Array.isArray(messages)
-      ? messages
-          .filter((m) => m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant'))
-          .map((m) => ({ role: m.role, content: m.content }))
-      : [];
-    if (list.length === 0) {
+    if (!Array.isArray(messages) || messages.length === 0) {
       return { ok: false, reason: 'bad-request', message: 'messages 为空' };
+    }
+
+    const normalizedMessages = [];
+    for (const m of messages) {
+      if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+      if (typeof m.content === 'string') {
+        normalizedMessages.push({ role: m.role, content: m.content });
+      } else if (Array.isArray(m.content)) {
+        // 多模态消息处理
+        const contentParts = [];
+        for (const part of m.content) {
+          if (!part || typeof part !== 'object') continue;
+          if (part.type === 'text' && typeof part.text === 'string') {
+            contentParts.push({ type: 'text', text: part.text });
+          } else if (part.type === 'image_url') {
+            const url = part.image_url?.url || '';
+            const filePath = part.image_url?.path || (url && !url.startsWith('http') && !url.startsWith('data:') ? url : '');
+            if (filePath) {
+              const dataUrl = await this.encodeImageToBase64DataUrl(filePath);
+              if (dataUrl) {
+                contentParts.push({ type: 'image_url', image_url: { url: dataUrl } });
+              }
+            } else if (url) {
+              contentParts.push({ type: 'image_url', image_url: { url } });
+            }
+          } else if (part.type === 'image' && (part.path || part.decodedPath)) {
+            const dataUrl = await this.encodeImageToBase64DataUrl(part.path || part.decodedPath);
+            if (dataUrl) {
+              contentParts.push({ type: 'image_url', image_url: { url: dataUrl } });
+            }
+          }
+        }
+        if (contentParts.length > 0) {
+          normalizedMessages.push({ role: m.role, content: contentParts });
+        }
+      }
+    }
+
+    if (normalizedMessages.length === 0) {
+      return { ok: false, reason: 'bad-request', message: '有效 messages 为空' };
     }
     const cap = Math.min(Math.max(Number(maxTokens) || 256, 16), 4096);
     try {
-      const text = await this.callLlm(list, system ? String(system) : '', cap, { temperature, timeoutMs: 60000 });
+      const text = await this.callLlm(normalizedMessages, system ? String(system) : '', cap, { temperature, timeoutMs: 60000 });
       return { ok: true, text };
     } catch (e) {
       return { ok: false, reason: 'generate-error', message: e.message || String(e) };
@@ -970,6 +1119,28 @@ class StandaloneService {
         return json200({ ok: false, reason: 'bad-request', message: '请求体必须是 JSON' });
       }
       return json200(await this.completeLlm(payload));
+    }
+
+    // 微信解密图片安全静态托管
+    if (pathname === 'wechat/image') {
+      const targetPath = parsed.searchParams.get('path');
+      if (!targetPath) {
+        return { status: 400, contentType: 'text/plain', body: 'Missing path parameter' };
+      }
+      try {
+        const resolved = path.resolve(targetPath);
+        const ext = path.extname(resolved).toLowerCase();
+        const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'];
+        if (!allowedExts.includes(ext)) {
+          return { status: 403, contentType: 'text/plain', body: 'Forbidden file type' };
+        }
+        if (fs.existsSync(resolved)) {
+          return { status: 200, file: resolved, contentType: MIME[ext] || 'image/jpeg' };
+        }
+      } catch {
+        /* ignore */
+      }
+      return { status: 404, contentType: 'text/plain', body: 'Image not found' };
     }
 
     // 8. 静态资源：字体

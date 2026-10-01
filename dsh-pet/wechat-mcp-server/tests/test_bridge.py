@@ -66,6 +66,31 @@ class ParseHistoryLinesTest(unittest.TestCase):
     def test_non_string_entries_skipped(self):
         self.assertEqual(bridge.parse_history_lines([None, 42], "me"), [])
 
+    def test_parse_image_media(self):
+        # 带有图片标记但文件不存在
+        raw_missing = "[2026-01-02 03:04] 张三: [图片] C:\\dummy\\not_exist.jpg (文件不存在)"
+        msgs = bridge.parse_history_lines([raw_missing], "me")
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["label"], "张三")
+        self.assertIn("media", msgs[0])
+        self.assertEqual(msgs[0]["media"]["type"], "image")
+        self.assertEqual(msgs[0]["media"]["decodedPath"], "C:\\dummy\\not_exist.jpg")
+        self.assertFalse(msgs[0]["media"]["exists"])
+
+        # 带有图片标记且为实际临时文件
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"fake-image")
+            real_path = f.name
+        try:
+            raw_real = f"[2026-01-02 03:04] 李四: [图片] {real_path}"
+            msgs2 = bridge.parse_history_lines([raw_real], "me")
+            self.assertEqual(msgs2[0]["media"]["decodedPath"], real_path)
+            self.assertTrue(msgs2[0]["media"]["exists"])
+        finally:
+            if os.path.exists(real_path):
+                os.remove(real_path)
+
 
 class ClampIntTest(unittest.TestCase):
     def test_clamps_high_and_low(self):

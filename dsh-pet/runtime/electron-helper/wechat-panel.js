@@ -448,7 +448,29 @@
           const bub = el('div', 'dsh-pet-wx-bub');
           const meta = el('div', 'dsh-pet-wx-meta', (m.label || '') + (m.time ? ' · ' + m.time : ''));
           bub.appendChild(meta);
-          bub.appendChild(el('div', null, m.text || ''));
+
+          if (m.media && m.media.type === 'image' && m.media.decodedPath) {
+            const imgEl = document.createElement('img');
+            imgEl.src = BASE + '/wechat/image?path=' + encodeURIComponent(m.media.decodedPath);
+            imgEl.alt = '[图片]';
+            imgEl.title = '点击在新窗口中查看原图';
+            imgEl.style.maxWidth = '180px';
+            imgEl.style.maxHeight = '180px';
+            imgEl.style.borderRadius = '6px';
+            imgEl.style.display = 'block';
+            imgEl.style.margin = '4px 0';
+            imgEl.style.cursor = 'pointer';
+            imgEl.onclick = () => {
+              window.open(imgEl.src, '_blank');
+            };
+            bub.appendChild(imgEl);
+          }
+
+          let displayText = m.text || '';
+          if (m.media && m.media.type === 'image' && displayText.startsWith('[图片]')) {
+            displayText = '[图片]';
+          }
+          bub.appendChild(el('div', null, displayText));
           wrap.appendChild(bub);
           body.appendChild(wrap);
         }

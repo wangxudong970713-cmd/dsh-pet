@@ -37,15 +37,15 @@ describe('memeImageUrl —— 表情包图片地址', () => {
     );
     // 桌面 HTTP 直连模式：同上
     assert.equal(
-      memeImageUrl('可爱', 'http://127.0.0.1:8080/dsh-pet-7340'),
-      'http://127.0.0.1:8080/dsh-pet-7340/pic/memes/' + encodeURIComponent('可爱') + '.png',
+      memeImageUrl('可爱', 'http://127.0.0.1:39281/dsh-pet-7340'),
+      'http://127.0.0.1:39281/dsh-pet-7340/pic/memes/' + encodeURIComponent('可爱') + '.png',
     );
     // 浏览器缺省：相对路径（页面自身就在宿主 origin 上）
     assert.equal(memeImageUrl('可爱'), '/dsh-pet-7340/pic/memes/' + encodeURIComponent('可爱') + '.png');
   });
 
   test('不得出现重复的 /dsh-pet-7340 段（桌面端图裂的成因）', () => {
-    for (const base of ['dsh-pet-bridge://dsh-pet/dsh-pet-7340', 'http://127.0.0.1:8080/dsh-pet-7340']) {
+    for (const base of ['dsh-pet-bridge://dsh-pet/dsh-pet-7340', 'http://127.0.0.1:39281/dsh-pet-7340']) {
       const url = memeImageUrl('可爱', base);
       assert.equal(url.split('/dsh-pet-7340').length - 1, 1, url);
     }
@@ -110,14 +110,31 @@ describe('createMemeImage —— 两端共用的配图节点', () => {
 
   test('桌面传 BASE → src 为绝对地址（file:// 页面必须绝对，且与视频同规则）', () => {
     const doc = stubDocument();
-    const base = 'http://127.0.0.1:8080/dsh-pet-7340';
+    const base = 'http://127.0.0.1:39281/dsh-pet-7340';
     try {
       createMemeImage('可爱', base);
       const img = doc.created.find((c) => c.tag === 'img');
       assert.equal(img?.props.src, memeImageUrl('可爱', base));
       assert.equal(
         img?.props.src,
-        'http://127.0.0.1:8080/dsh-pet-7340/pic/memes/' + encodeURIComponent('可爱') + '.png',
+        'http://127.0.0.1:39281/dsh-pet-7340/pic/memes/' + encodeURIComponent('可爱') + '.png',
+      );
+    } finally {
+      doc.restore();
+    }
+  });
+
+  test('支持直接 URL 与 wechat/image 相对路径', () => {
+    const doc = stubDocument();
+    const base = 'http://127.0.0.1:39281/dsh-pet-7340';
+    try {
+      createMemeImage('data:image/png;base64,xxxx', base);
+      assert.equal(doc.created[doc.created.length - 1].props.src, 'data:image/png;base64,xxxx');
+
+      createMemeImage('wechat/image?path=C%3A%5Ca.jpg', base);
+      assert.equal(
+        doc.created[doc.created.length - 1].props.src,
+        'http://127.0.0.1:39281/dsh-pet-7340/wechat/image?path=C%3A%5Ca.jpg',
       );
     } finally {
       doc.restore();

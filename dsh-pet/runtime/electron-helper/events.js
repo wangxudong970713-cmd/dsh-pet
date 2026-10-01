@@ -456,13 +456,16 @@ async function maybeAutoDraft(sessions) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ system, messages, maxTokens: 120, temperature: 0.8 }),
   });
-  await saveWechatGate();
   if (!out || !out.ok) {
     const errText = (out && out.message) || '模型调用失败';
-    console.warn('[dsh-pet] 起草失败：' + errText);
-    for (const s of sprites) s.showWechatNotice('起草「' + target.chat + '」失败：' + errText, '');
+    console.warn('[dsh-pet] 自动起草「' + target.chat + '」失败（静默跳过，避免弹框打扰）：' + errText);
+    // 失败时回滚占用的每小时配额，并给予 30 秒短暂冷却退避，避免瞬断导致后续起草被锁死
+    gate.recentDrafts = gate.recentDrafts.filter((t) => t !== nowSec);
+    gate.lastDraftAt[target.username] = Math.max(0, nowSec - (cfg.draftCooldownSec || 300) + 30);
+    await saveWechatGate();
     return;
   }
+  await saveWechatGate();
   const draft = S.cleanDraft(out.text);
   if (!draft) return;
   const image = await wechatStickerFor(target.lastMessage);
@@ -516,8 +519,23 @@ async function pollWechatOnce() {
 
   if (!res.firstRun && changed.length > 0) {
     if (cfg.bubbleNewMessage) {
-      const image = await wechatStickerFor(changed[changed.length - 1].lastMessage);
-      for (const s of sprites) s.showWechatNotice(wechatBubbleText(changed), image);
+      const lastSession = changed[changed.length - 1];
+      let bubbleImg = '';
+      if (lastSession && (lastSession.msgTypeRaw === 3 || lastSession.msgType === '图片')) {
+        try {
+          const hist = await fetchWechatJson(WECHAT_HISTORY_URL + '?chat=' + encodeURIComponent(lastSession.username) + '&limit=1');
+          const latestMsg = hist?.messages?.[hist.messages.length - 1];
+          if (latestMsg?.media?.decodedPath) {
+            bubbleImg = 'wechat/image?path=' + encodeURIComponent(latestMsg.media.decodedPath);
+          }
+        } catch {
+          /* fallback to sticker */
+        }
+      }
+      if (!bubbleImg) {
+        bubbleImg = await wechatStickerFor(lastSession.lastMessage);
+      }
+      for (const s of sprites) s.showWechatNotice(wechatBubbleText(changed), bubbleImg);
     }
     if (cfg.desktopNotify && window.petBridge && typeof petBridge.notify === 'function') {
       for (const c of changed.slice(0, 3)) {
