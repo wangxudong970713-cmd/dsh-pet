@@ -47,6 +47,12 @@ const env = {
   DSH_PET_CONFIG_URL: 'dsh-pet-bridge://dsh-pet/dsh-pet-7340/config',
 };
 
+// Electron 优先识别 ELECTRON_RUN_AS_NODE：只要该变量存在（部分终端 / IDE / 集成环境
+// 会预设为 1），electron.exe 就会退化成纯 Node 进程，main.js 里的 require('electron')
+// 会抛 "Cannot find module 'electron'" 并立刻退出，表现为「桌宠秒退且没有窗口」。
+// 这里显式剔除，保证启动的是真正的 Chromium 主进程。
+delete env.ELECTRON_RUN_AS_NODE;
+
 const child = spawn(electron, [helperMain], { env, stdio: 'inherit', windowsHide: false });
 child.on('exit', (code, signal) => {
   console.log(`[start-standalone] app exited (code=${code}, signal=${signal})`);

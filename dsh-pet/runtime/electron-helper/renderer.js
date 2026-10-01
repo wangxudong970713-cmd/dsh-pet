@@ -55,6 +55,8 @@ async function loadConfig() {
     refreshSec: (merged && merged.main && merged.main.eventsRefreshSec) || {},
     // 拖拽抛掷物理参数（顶层全局，所有宠物共用；合并器已填内置默认）
     physics: (merged && merged.main && merged.main.physics) || S.DEFAULT_PHYSICS,
+    // 微信联动配置（顶层全局；合并器已填内置默认，这里再规范化一次保证字段齐全）
+    wechat: S.normalizeWechatConfig(merged && merged.main && merged.main.wechat),
   };
 }
 

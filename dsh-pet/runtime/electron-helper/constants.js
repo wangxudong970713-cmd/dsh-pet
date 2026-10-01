@@ -125,6 +125,16 @@ const BALANCE_URL = BASE + '/balance';
 const TRIGGER_URL = BASE + '/balance/trigger';
 const WHISPER_URL = BASE + '/whisper';
 const WORK_STATUS_URL = BASE + '/work-status'; // 工作状态联动：1s 轮询，ts 变化才触发（与浏览器同一端点）
+// 微信联动：全部由桌面端内置服务转发到 Python 助手进程（只读微信库，绝不发送）
+const WECHAT_STATUS_URL = BASE + '/wechat/status';
+const WECHAT_INIT_URL = BASE + '/wechat/init';
+const WECHAT_POLL_URL = BASE + '/wechat/poll';
+const WECHAT_SESSIONS_URL = BASE + '/wechat/sessions';
+const WECHAT_HISTORY_URL = BASE + '/wechat/history';
+const WECHAT_OVERVIEW_URL = BASE + '/wechat/overview';
+const WECHAT_STATE_URL = BASE + '/wechat/state';
+const WECHAT_MEMES_URL = BASE + '/wechat/memes';
+const LLM_COMPLETE_URL = BASE + '/llm/complete';
 const BUBBLE_DURATION_MS = 10 * 1000; // 余额/碎碎念气泡展示时长（与浏览器一致：定时自动消失，与动画解耦）
 // 窗口四周外扩 = 该比例 × 宠物尺寸：为气泡 / 未来可能的弹窗预留显示空间；
 // 外扩区透明且点击穿透（只有身体命中区可交互）。单点可调——按实际观感改这里。
@@ -151,6 +161,9 @@ window.__dshPetDebug = {
   lastBalanceOk: null,
   menuOpen: false,
   chatOpen: false,
+  wechatOpen: false,
+  lastWechatPollAt: 0,
+  lastWechatChanged: 0,
   bootAt: Date.now(),
 };
 window.addEventListener('error', (event) => {

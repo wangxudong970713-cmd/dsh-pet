@@ -61,6 +61,43 @@
   // 不需要时改为 false（修改后刷新或重启生效）。必填布尔值，缺失即配置错误；
   // 也可在用户配置（main-config.json）顶层覆盖，设置页保存宠物时会保留该字段。
   "notificationsEnabled": true,
+  // ===================== 微信联动（支持建议草稿与可选自动回复） =====================
+  // 桌宠通过随它启停的 Python 助手进程读取本机微信数据库，并支持大模型起草建议与 Windows 自动回复。
+  // 数据源由 wechat-cli 提供的解密缓存构成；密钥由「抓取密钥」一键获取，随后长期有效。
+  // 隐私提醒：开启 autoDraft 后，被允许会话的最近聊天记录会发送给你配置的大模型用于起草回复。
+  "wechat": {
+    // 总开关。关闭时桌宠完全不会启动 Python 助手进程。
+    "enabled": false,
+    // ---- 会话范围：mode = all（全部）/ whitelist（仅 list 命中）/ none（不看） ----
+    // list 里可以写微信号、群名或备注名；写 * 表示全部，两端 * 表示子串匹配（如 *拼车*）。
+    "individuals": { "mode": "all", "list": [] },
+    "groups": { "mode": "all", "list": [] },
+    // 群聊消息是否仅在被 @ 时才起草回复（true 时群消息未 @ 自己则忽略，防群聊刷屏）
+    "groupRequireAt": false,
+    // ---- 自动起草范围（群聊/私聊由上面两个 mode 分别控制，这里再收一道口子）----
+    // 默认 none：除非你显式打开，桌宠绝不把聊天内容交给大模型。
+    "autoDraft": { "mode": "none", "list": [] },
+    // 自动回复总开关：开启后，起草完毕将自动通过 Windows 自动化脚本发送到微信
+    "autoReply": false,
+    // 跳过公众号/服务号（gh_ 开头的 username），以及下面 folded 里列出的会话。
+    "skipSubscriptions": true,
+    "skipFolded": true,
+    "folded": [],
+    // ---- 提醒方式 ----
+    "bubbleNewMessage": true,   // 有新消息时桌宠头顶冒一句「谁：说了啥」
+    "bubbleOverview": true,     // 右键菜单「微信」面板里展示今日概览
+    "desktopNotify": false,     // 同时发系统通知并让任务栏闪烁
+    "stickerEcho": false,       // 对方发来的内容能对上表情包时，配一张图一起冒泡
+    // ---- 节奏与配额 ----
+    "pollIntervalSec": 20,      // 轮询间隔（秒），2–600
+    "draftCooldownSec": 300,    // 同一会话两次自动起草的最小间隔（秒）
+    "draftMaxPerHour": 12,      // 全局每小时自动起草上限（0 = 不限）
+    "historyLimit": 12,         // 起草时参考的历史条数，2–2000
+    "overviewCount": 5,         // 概览里展示的活跃会话数，1–20
+    // ---- 起草用的系统提示词 ----
+    // 可用占位符：{name} = 会话名，{count} = 本次参考的历史条数。
+    "draftPrompt": "你在替主人起草一条微信回复。要求：\n1. 用主人的口吻，像本人随手打字，不要客套开场、不要解释你在做什么；\n2. 只输出这一条消息本身，不要引号、不要前缀（如「回复：」）、不要多段排版；\n3. 长度贴近主人平时的习惯，通常一到两句话；\n4. 对方是 {name}，历史消息里主人自己说的话（me / 主人）就是口吻样本。"
+  },
   // ===================== 工作状态联动文案（条目级，与 animations/physics 同级；种类文件 pet/<名>-config.json 顶层可覆盖） =====================
   // 工作状态气泡文本（pets[].workStatusEnabled 开启时展示；仅在 events.workStatus 动画触发时弹）。
   // 结构 = 二维数组，外层索引即档位（与 events.workStatus 动画索引一一对应，勿在中间插入新档）：

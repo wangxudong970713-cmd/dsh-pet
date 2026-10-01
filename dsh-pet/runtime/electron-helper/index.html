@@ -111,6 +111,27 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+      /* 可点击复制的草稿气泡：只有它接收指针事件（其余气泡保持穿透，绝不挡桌面） */
+      .pet-bubble.is-copyable {
+        pointer-events: auto;
+        cursor: pointer;
+      }
+      .pet-bubble.is-copyable:hover {
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow:
+          0 calc(var(--pet-size, 462px) * 0.014) calc(var(--pet-size, 462px) * 0.045) rgba(0, 0, 0, 0.2),
+          0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+      /* 气泡内的动作提示行（「点击复制」/「已复制 ✓」） */
+      .pet-bub-copy {
+        margin-top: calc(var(--pet-size, 462px) * 0.012);
+        padding-top: calc(var(--pet-size, 462px) * 0.01);
+        border-top: 1px dashed rgba(43, 43, 43, 0.22);
+        font-size: calc(var(--pet-size, 462px) * 0.028);
+        color: rgba(43, 43, 43, 0.62);
+        text-align: center;
+        user-select: none;
+      }
       .pet-bub-row {
         display: flex;
         justify-content: space-between;
@@ -170,6 +191,7 @@
     <script src="./constants.js"></script>
     <script src="./sprite.js"></script>
     <script src="./events.js"></script>
+    <script src="./wechat-panel.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

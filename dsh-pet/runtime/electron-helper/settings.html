@@ -28,27 +28,15 @@
           <div class="form-group">
             <label for="apiKey">API Key (密钥) <span class="required">*</span></label>
             <div class="input-with-action">
-              <input
-                type="password"
-                id="apiKey"
-                placeholder="例如: sk-xxxxxxxxxxxxxxxxxxxxxxxx"
-                autocomplete="off"
-              />
-              <button type="button" id="toggleApiKey" class="btn-icon" title="显示/隐藏明文">
-                👁️
-              </button>
+              <input type="password" id="apiKey" placeholder="例如: sk-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" />
+              <button type="button" id="toggleApiKey" class="btn-icon" title="显示/隐藏明文">👁️</button>
             </div>
             <span class="form-tip">支持 DeepSeek 官方或任何兼容 OpenAI 格式的服务商密钥。</span>
           </div>
 
           <div class="form-group">
             <label for="baseUrl">接口地址 (Base URL)</label>
-            <input
-              type="text"
-              id="baseUrl"
-              placeholder="https://api.deepseek.com"
-              value="https://api.deepseek.com"
-            />
+            <input type="text" id="baseUrl" placeholder="https://api.deepseek.com" value="https://api.deepseek.com" />
             <span class="form-tip">默认 DeepSeek 官方；可填写 SiliconFlow、Ollama、OneAPI 等端点。</span>
           </div>
 
@@ -133,7 +121,285 @@
           </div>
         </section>
 
-        <!-- 卡片 3: 系统与通用设置 -->
+        <!-- 卡片 3: 微信联动（桌面端专属，只读：桌宠只生成草稿，永不代你发送） -->
+        <section class="card">
+          <div class="card-title">
+            <span class="icon">💬</span>
+            <h2>微信联动</h2>
+          </div>
+
+          <div class="form-group switch-group">
+            <div class="switch-info">
+              <span class="switch-label">开启微信联动</span>
+              <span class="switch-desc"> 桌宠只读本机微信：有人发消息时冒一句「谁：说了啥」，还能帮你起草回复 </span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="wechatEnabled" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- 数据通道：状态探测 + 一键抓密钥。
+               刻意放在 #wechatBody 之外：它是「准备好数据」的前置步骤，总开关关着时也应该能用。 -->
+          <div class="form-group">
+            <span class="switch-label">数据通道（数据库密钥）</span>
+            <span class="form-tip">
+              需要微信正在登录运行。密钥抓一次长期有效，之后升级微信也不用重抓；密钥只存在本机
+              <code>~/.wechat-cli/</code>。
+            </span>
+            <div class="test-row">
+              <button type="button" id="btnWechatStatus" class="btn-secondary">🔍 检测状态</button>
+              <button type="button" id="btnWechatInit" class="btn-secondary">🔑 一键抓取密钥</button>
+            </div>
+            <div id="wechatStatus" class="wechat-detail">点「检测状态」看看桌宠能不能读到微信数据。</div>
+          </div>
+
+          <div class="wechat-body is-off" id="wechatBody">
+            <div class="wechat-subhead">🤖 消息监听与智能起草范围</div>
+
+            <!-- 私聊范围（搜索搜选） -->
+            <div class="wechat-scope">
+              <div class="wechat-scope-head">
+                <div>
+                  <span class="switch-label">👤 私聊消息监听</span>
+                  <div class="scope-desc">搜索并勾选需要监听的好友（勾选的好友才提醒和起草）</div>
+                </div>
+              </div>
+              <div class="wechat-picker" id="wechatIndividualPicker">
+                <div class="wechat-picker-search-bar">
+                  <input type="text" id="wechatIndividualSearch" placeholder="🔍 搜索好友备注名或昵称…" />
+                  <button type="button" id="wechatIndividualAddBtn" class="btn-xs">➕ 添加到监听</button>
+                  <button type="button" id="wechatIndividualClearBtn" class="btn-xs">清空</button>
+                </div>
+                <div id="wechatIndividualCandidateList" class="wechat-picker-candidates">
+                  <div class="wechat-picker-empty">暂无搜索结果或正在加载微信好友…</div>
+                </div>
+                <div class="scope-desc" style="margin-top: 4px;">已勾选监听的好友：</div>
+                <div id="wechatIndividualBadges" class="wechat-picker-badges"></div>
+                <textarea id="wechatIndividualList" style="display: none;"></textarea>
+              </div>
+            </div>
+
+            <!-- 群聊范围（搜索搜选） -->
+            <div class="wechat-scope">
+              <div class="wechat-scope-head">
+                <div>
+                  <span class="switch-label">👥 群聊消息监听</span>
+                  <div class="scope-desc">搜索并勾选需要监听的微信群（例如搜“魔”勾选“魔仙堡”）</div>
+                </div>
+              </div>
+              <div class="wechat-picker" id="wechatGroupPicker">
+                <div class="wechat-picker-search-bar">
+                  <input type="text" id="wechatGroupSearch" placeholder="🔍 搜索群聊名称（例如：魔仙堡）…" />
+                  <button type="button" id="wechatGroupAddBtn" class="btn-xs">➕ 添加到监听</button>
+                  <button type="button" id="wechatGroupClearBtn" class="btn-xs">清空</button>
+                </div>
+                <div id="wechatGroupCandidateList" class="wechat-picker-candidates">
+                  <div class="wechat-picker-empty">暂无搜索结果或正在加载微信群…</div>
+                </div>
+                <div class="scope-desc" style="margin-top: 4px;">已勾选监听的群聊：</div>
+                <div id="wechatGroupBadges" class="wechat-picker-badges"></div>
+                <textarea id="wechatGroupList" style="display: none;"></textarea>
+              </div>
+            </div>
+
+            <!-- 群聊 @ 过滤开关 -->
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">群聊仅在被 @ 时起草</span>
+                <span class="switch-desc">群消息中只有艾特自己（@昵称/@me/@所有人）时才触发起草，避免群聊闲聊打扰</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatGroupRequireAt" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- AI 起草总开关（开/关） -->
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">⚡ AI 智能起草建议</span>
+                <span class="switch-desc">开启后，桌宠会对上面勾选监听的私聊和群聊消息自动调用大模型起草回复</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatAutoDraftEnabled" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- 自动回复开关 -->
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">🤖 自动将起草内容发送到微信</span>
+                <span class="switch-desc">起草完成后通过 Windows UI 自动化脚本自动切到该联系人/群并模拟回车发送</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatAutoReply" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="wechat-subhead">🛡️ 过滤与免打扰</div>
+
+            <!-- 跳过规则 -->
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">跳过公众号 / 服务号</span>
+                <span class="switch-desc">gh_ 开头的账号（推送、通知类）不提醒、不起草</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatSkipSubscriptions" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">跳过已折叠会话</span>
+                <span class="switch-desc">不打扰已折叠/免打扰的会话</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatSkipFolded" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label for="wechatFoldedList">已折叠 / 免打扰名单</label>
+              <textarea
+                id="wechatFoldedList"
+                rows="2"
+                placeholder="每行一个：微信内部 ID（如 xxx@chatroom）或备注名"
+              ></textarea>
+            </div>
+
+            <div class="wechat-subhead">🔔 桌面提醒与互动</div>
+
+            <!-- 提醒方式 -->
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">新消息气泡提醒</span>
+                <span class="switch-desc">收到消息时桌宠头顶弹出「谁：说了啥」</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatBubbleNewMessage" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">今日概览气泡</span>
+                <span class="switch-desc">启动桌宠或右键打开时，概览今日聊天活跃度与未读数</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatBubbleOverview" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">系统通知 + 任务栏闪烁</span>
+                <span class="switch-desc">桌宠被窗口遮挡时，通过 Windows 系统通知提醒</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatDesktopNotify" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="form-group switch-group">
+              <div class="switch-info">
+                <span class="switch-label">表情包呼应</span>
+                <span class="switch-desc">根据对方发来的内容智能匹配生动的表情包一同展示</span>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="wechatStickerEcho" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="wechat-subhead">⚙️ 高级参数微调</div>
+
+            <!-- 节奏与配额 -->
+            <div class="form-group">
+              <label for="wechatPollInterval">轮询间隔 (秒)</label>
+              <input type="number" id="wechatPollInterval" min="2" max="600" step="1" value="20" />
+              <span class="form-tip">检测新消息的频率（2~600 秒，推荐 2~20 秒）。</span>
+            </div>
+
+            <div class="form-group">
+              <label for="wechatDraftCooldown">同一会话起草冷却 (秒)</label>
+              <input type="number" id="wechatDraftCooldown" min="0" max="86400" step="30" value="300" />
+              <span class="form-tip">同一个群或好友在此时间内只自动起草一次（0 = 不冷却）。</span>
+            </div>
+
+            <div class="form-group">
+              <label for="wechatDraftMaxPerHour">每小时自动起草上限 (条)</label>
+              <input type="number" id="wechatDraftMaxPerHour" min="0" max="600" step="1" value="12" />
+              <span class="form-tip">全局上限，防止消息轰炸时把 token 烧光；0 = 不限。</span>
+            </div>
+
+            <div class="form-group">
+              <label for="wechatHistoryLimit">起草参考的历史条数</label>
+              <input type="number" id="wechatHistoryLimit" min="2" max="2000" step="1" value="12" />
+              <span class="form-tip">2~2000 条。条数越多生成的回复语气越贴近你的日常习惯。</span>
+            </div>
+
+            <div class="form-group">
+              <label for="wechatOverviewCount">概览展示的会话数</label>
+              <input type="number" id="wechatOverviewCount" min="1" max="20" step="1" value="5" />
+              <span class="form-tip">1~20 个。概览按「未读最多」排序取前几名。</span>
+            </div>
+
+            <!-- 🔮 AI 风格蒸馏（克隆我的说话口吻） -->
+            <div class="wechat-subhead">🔮 AI 风格蒸馏（克隆“我”的说话口吻）</div>
+            <div class="wechat-distill-card">
+              <div class="wechat-distill-desc">
+                自动从本地微信提取主人真实的聊天发言（纯本地脱敏），通过 DeepSeek 深度提炼您的打字习惯、标点口癖与代表性问答范例，生成专属于您的“数字分身设定”，彻底告别千篇一律的 AI 客套腔！
+              </div>
+              <div class="wechat-distill-controls">
+                <div class="distill-limit-row">
+                  <label for="wechatDistillLimit">历史提取条数上限：</label>
+                  <input type="number" id="wechatDistillLimit" min="50" max="3000" step="50" value="500" />
+                  <span class="form-tip">条（默认 500 条，可设 100~2000，本地秒级提取）</span>
+                </div>
+                <button type="button" id="btnWechatDistill" class="btn-primary distill-btn">
+                  🔮 一键分析历史聊天，提取“我”的语言指纹
+                </button>
+              </div>
+              <div id="wechatDistillStatus" class="wechat-distill-status" style="display: none;"></div>
+
+              <!-- 蒸馏成果展示区 -->
+              <div id="wechatDistillResult" class="wechat-distill-result" style="display: none;">
+                <div class="distill-meta-info" id="distillMetaInfo"></div>
+                <div class="distill-tags-bar" id="distillTagsBar"></div>
+                <div class="distill-persona-preview">
+                  <div class="label-with-val">
+                    <span class="preview-title">📝 提炼出的人设与打字特征：</span>
+                    <button type="button" id="btnApplyDistillPrompt" class="btn-xs btn-highlight">✨ 应用到下方起草 Prompt</button>
+                  </div>
+                  <textarea id="wechatDistillPersonaText" rows="7" readonly></textarea>
+                </div>
+              </div>
+            </div>
+
+            <!-- 起草提示词 -->
+            <div class="form-group">
+              <div class="label-with-val">
+                <label for="wechatDraftPrompt">起草提示词 (Prompt)</label>
+                <button type="button" id="btnWechatPromptReset" class="btn-text">恢复默认</button>
+              </div>
+              <textarea id="wechatDraftPrompt" rows="5"></textarea>
+              <span class="form-tip">
+                可用占位符：<code>{name}</code> = 会话名，<code>{count}</code> = 本次参考的历史条数。可直接将上方蒸馏出的成果应用到此处。
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 卡片 4: 系统与通用设置 -->
         <section class="card">
           <div class="card-title">
             <span class="icon">🖥️</span>

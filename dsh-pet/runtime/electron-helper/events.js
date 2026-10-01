@@ -178,12 +178,13 @@ PetSprite.prototype.startBroadcastLoop = function startBroadcastLoop() {
   void refresh();
 };
 
-// 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与余额同一语义）
-// image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
-PetSprite.prototype.showWhisper = function showWhisper(text, image) {
+// 通用「事件气泡」：碎碎念与微信提醒共用同一条展示路径（同一个 events.whisper 动画池 + 10s 文本气泡）。
+// tag 只影响日志前缀，便于排障时区分来源。
+// copy：可选的「点击即复制」正文（微信草稿用）。非空时气泡加一行提示、并接收指针事件（见 sprite.renderBubble）。
+PetSprite.prototype.showEventBubble = function showEventBubble(text, image, tag, copy) {
   const pool = this.animations.events?.whisper;
   if (!pool || pool.length === 0) {
-    console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放碎碎念动画');
+    console.error('[dsh-pet] 配置缺少 animations.events.whisper，无法播放事件动画');
     return;
   }
   // 整池随机抽 1 槽（避开当前正播动画，避免连续重复）；槽位若为数组候选再档内随机（与浏览器一致）
@@ -191,27 +192,54 @@ PetSprite.prototype.showWhisper = function showWhisper(text, image) {
   console.log(
     '[dsh-pet] ' +
       new Date().toTimeString().slice(0, 8) +
-      ' whisper pet=' +
+      ' ' +
+      tag +
+      ' pet=' +
       this.pet.id +
       ' -> [' +
       name +
       '] 「' +
       text +
       '」' +
-      (image ? ' [' + image + ']' : ''),
+      (image ? ' [' + image + ']' : '') +
+      (copy ? ' [可复制 ' + copy.length + ' 字]' : ''),
   );
   this.stopMove();
   this.whisperOn = true;
   this.whisperView = S.whisperBubbleView({ ok: true, text, ts: 0 });
   this.whisperImage = typeof image === 'string' ? image : '';
+  // 可复制正文（无则空串）：气泡据此变可点击。开新气泡前先复位上一轮的悬停/已复制状态，
+  // 否则鼠标还停在旧位置上会留下一个"能点但没内容"的穿透死角。
+  this.whisperCopy = typeof copy === 'string' ? copy : '';
+  this.bubbleCopyDone = false;
+  if (this.bubbleCopyTimer !== null) {
+    window.clearTimeout(this.bubbleCopyTimer);
+    this.bubbleCopyTimer = null;
+  }
+  this.onBubbleCopyHover(false);
   this.renderBubble();
   // 气泡 10s 定时消失（与动画解耦，与余额同一语义；重复触发先清旧定时器）
   if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
   this.whisperTimer = window.setTimeout(() => {
     this.whisperOn = false;
+    this.whisperCopy = '';
+    this.bubbleCopyDone = false;
+    this.onBubbleCopyHover(false);
     this.renderBubble();
   }, BUBBLE_DURATION_MS);
   this.playOnce(name);
+};
+
+// 碎碎念展示（本宠物）：随机抽 events.whisper 动画 + 弹文本气泡（10s 消失，与余额同一语义）
+// image：host 随机抽定的配图名称（未开配图/池为空则空串，与浏览器端同一契约）
+PetSprite.prototype.showWhisper = function showWhisper(text, image) {
+  return this.showEventBubble(text, image, 'whisper');
+};
+
+// 微信新消息/概览提醒：复用同一气泡通道，日志前缀区分来源（只读提醒，永不代表主人发送）
+// copy：草稿类气泡传草稿正文 → 气泡可点击复制到剪贴板（仍只写剪贴板，没有发送路径）
+PetSprite.prototype.showWechatNotice = function showWechatNotice(text, image, copy) {
+  return this.showEventBubble(text, image, 'wechat', copy);
 };
 
 // 余额展示（档位动画 + 气泡）：周期轮询与菜单点播共用同一展示路径，视觉/行为严格一致
@@ -260,6 +288,263 @@ function applyBalanceNotice(state, explicit) {
   }
 }
 
+// ---------- 微信联动（桌面端专属；支持建议草稿与自动回复） ----------
+//
+// 数据链路：桌宠主进程 spawn 的 Python sidecar（wechat_cli_mcp.bridge）→ 主进程路由 → 这里轮询。
+// 职责划分：本文件只做「轮询 + 调共享层纯函数 + 决定弹什么」；范围判定/文案/起草拼装全在 src/shared/wechat.ts。
+
+const WECHAT_POLL_MIN_MS = 2000;
+/** 桌宠本次启动的时间戳（Unix 秒），启动前的旧未读消息一律不起草 */
+const petStartupSec = Math.floor(Date.now() / 1000);
+
+/** 起草节流闸门：跨重启持久化到 `<userData>/dsh-pet/wechat-state.json`（/wechat/state 不透明 JSON）。 */
+let wechatGate = null;
+let wechatGateLoading = null;
+/** 最近用过的表情包名（避免连续弹同一张）。 */
+let wechatStickerRecent = [];
+/** 表情包池缓存：`{ 名字: 描述 }`（pickStickerEcho 需要这个形状；/wechat/memes 给的是数组）。 */
+let wechatMemes = null;
+/** 今日概览每次启动只主动弹一次。 */
+let wechatOverviewShown = false;
+/** sidecar 不可用只报一次错，避免每 20s 刷屏。 */
+let wechatErrorLogged = false;
+
+async function fetchWechatJson(url, init) {
+  try {
+    const res = await fetch(url, init ? { cache: 'no-store', ...init } : { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function loadWechatGate() {
+  if (wechatGate) return wechatGate;
+  if (!wechatGateLoading) {
+    wechatGateLoading = (async () => {
+      const saved = await fetchWechatJson(WECHAT_STATE_URL);
+      const raw = saved && saved.draftGate && typeof saved.draftGate === 'object' ? saved.draftGate : {};
+      const lastDraftAt = {};
+      if (raw.lastDraftAt && typeof raw.lastDraftAt === 'object') {
+        for (const [k, v] of Object.entries(raw.lastDraftAt)) if (typeof v === 'number') lastDraftAt[k] = v;
+      }
+      const lastDraftMsgTs = {};
+      if (raw.lastDraftMsgTs && typeof raw.lastDraftMsgTs === 'object') {
+        for (const [k, v] of Object.entries(raw.lastDraftMsgTs)) if (typeof v === 'number') lastDraftMsgTs[k] = v;
+      }
+      wechatGate = {
+        lastDraftAt,
+        recentDrafts: Array.isArray(raw.recentDrafts) ? raw.recentDrafts.filter((t) => typeof t === 'number') : [],
+        lastDraftMsgTs,
+      };
+      if (saved && Array.isArray(saved.stickerRecent)) {
+        wechatStickerRecent = saved.stickerRecent.filter((n) => typeof n === 'string').slice(0, 12);
+      }
+      return wechatGate;
+    })();
+  }
+  return wechatGateLoading;
+}
+
+async function saveWechatGate() {
+  if (!wechatGate) return;
+  await fetchWechatJson(WECHAT_STATE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ draftGate: wechatGate, stickerRecent: wechatStickerRecent }),
+  });
+}
+
+async function loadWechatMemes() {
+  if (wechatMemes) return wechatMemes;
+  const data = await fetchWechatJson(WECHAT_MEMES_URL);
+  const list = Array.isArray(data) ? data : data && Array.isArray(data.memes) ? data.memes : [];
+  wechatMemes = {};
+  for (const m of list) {
+    if (m && typeof m.name === 'string' && typeof m.desc === 'string') wechatMemes[m.name] = m.desc;
+  }
+  return wechatMemes;
+}
+
+/** 表情包呼应：按对方消息文本挑一张最贴的（挑中就记入 recent，避免连弹同一张）。 */
+async function wechatStickerFor(text) {
+  if (!config.wechat?.stickerEcho) return '';
+  const memes = await loadWechatMemes();
+  const name = S.pickStickerEcho(String(text || ''), memes, wechatStickerRecent);
+  if (!name) return '';
+  wechatStickerRecent = [name, ...wechatStickerRecent.filter((n) => n !== name)].slice(0, 12);
+  await saveWechatGate();
+  return name;
+}
+
+/** 若干会话 → 一句气泡文案（单条带发送者，多条合并成一行）。 */
+function wechatBubbleText(sessions) {
+  if (sessions.length === 1) {
+    const b = S.formatNewMessageBubble(sessions[0]);
+    return b.title + '：' + b.text;
+  }
+  const lines = sessions.slice(0, 3).map((s) => {
+    const b = S.formatNewMessageBubble(s);
+    return b.title + '：' + b.text;
+  });
+  return sessions.length + ' 个会话有新消息｜' + lines.join('；') + (sessions.length > 3 ? '…' : '');
+}
+
+/** 今日概览气泡：谁找你最多 + 未读总数（数据来自 /wechat/overview，只扫最近若干会话）。 */
+async function showWechatOverview() {
+  const data = await fetchWechatJson(WECHAT_OVERVIEW_URL);
+  if (!data || !data.ok) return;
+  const top = (Array.isArray(data.today) ? data.today : [])
+    .slice(0, 3)
+    .map((t) => t.chat + ' ' + t.count)
+    .join('、');
+  const text =
+    '今天 ' + (data.totalToday || 0) + ' 条消息 · 未读 ' + (data.unreadTotal || 0) + (top ? '｜最热闹：' + top : '');
+  for (const s of sprites) s.showWechatNotice(text, '');
+}
+
+/**
+ * 主动预生成一句建议回复（受 autoDraft 范围 + 冷却 + 每小时配额门控 + 启动时间门控）。
+ * 只把「被允许会话」的最近若干条历史发给主人自己配置的大模型；生成结果上气泡，若开启 autoReply 则自动发送。
+ */
+async function maybeAutoDraft(sessions) {
+  const cfg = config.wechat;
+  if (!cfg || !cfg.enabled) return;
+  if (cfg.autoDraft.mode === 'none' && !cfg.autoReply) return;
+  const gate = await loadWechatGate();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const target = S.pickDraftTarget(sessions, cfg, gate, nowSec, petStartupSec);
+  if (!target) return;
+  // 双重保险：早于桌宠启动时刻的消息一律不起草
+  if (target.timestamp && target.timestamp < petStartupSec) return;
+
+  // 先占闸门并记录本次处理的消息时间戳，防止下一轮重复触发
+  gate.lastDraftAt[target.username] = nowSec;
+  gate.recentDrafts = gate.recentDrafts.filter((t) => t > nowSec - 3600).concat(nowSec);
+  if (!gate.lastDraftMsgTs) gate.lastDraftMsgTs = {};
+  gate.lastDraftMsgTs[target.username] = target.timestamp || nowSec;
+
+  const hist = await fetchWechatJson(
+    WECHAT_HISTORY_URL + '?chat=' + encodeURIComponent(target.username) + '&limit=' + cfg.historyLimit,
+  );
+  if (!hist || !hist.ok || !Array.isArray(hist.messages) || hist.messages.length === 0) {
+    await saveWechatGate();
+    return;
+  }
+  // 检查最后一条消息是否是主人自己发的：如果是自己刚发的，无需生成起草建议
+  const lastMsg = hist.messages[hist.messages.length - 1];
+  const isLastFromSelf = lastMsg && (lastMsg.isSelf || lastMsg.label === (hist.selfLabel || 'me'));
+  if (isLastFromSelf) {
+    await saveWechatGate();
+    return;
+  }
+
+  // 群聊 @ 门控：如果开启了 groupRequireAt，只有在群消息 @ 了主人时才起草
+  if (target.isGroup && cfg.groupRequireAt) {
+    const lastOtherMsg = [...hist.messages].reverse().find((m) => !m.isSelf && m.label !== (hist.selfLabel || 'me'));
+    if (lastOtherMsg && !S.isGroupMentioned(lastOtherMsg.text, hist.selfLabel)) {
+      await saveWechatGate();
+      return;
+    }
+  }
+
+  const messages = S.buildDraftMessages(target, hist.messages, hist.selfLabel || 'me');
+  const system = S.buildDraftSystemPrompt(cfg, target, hist.messages.length);
+  const out = await fetchWechatJson(LLM_COMPLETE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ system, messages, maxTokens: 120, temperature: 0.8 }),
+  });
+  await saveWechatGate();
+  if (!out || !out.ok) {
+    const errText = (out && out.message) || '模型调用失败';
+    console.warn('[dsh-pet] 起草失败：' + errText);
+    for (const s of sprites) s.showWechatNotice('起草「' + target.chat + '」失败：' + errText, '');
+    return;
+  }
+  const draft = S.cleanDraft(out.text);
+  if (!draft) return;
+  const image = await wechatStickerFor(target.lastMessage);
+
+  if (cfg.autoReply && window.petBridge && typeof petBridge.sendAutoReply === 'function') {
+    try {
+      const sendRes = await petBridge.sendAutoReply({ chat: target.chat, text: draft });
+      if (sendRes && sendRes.ok) {
+        for (const s of sprites) s.showWechatNotice('已自动回复「' + target.chat + '」：' + draft, image, draft);
+      } else {
+        const rawErr = (sendRes && sendRes.error) || '发送失败';
+        let errMsg = rawErr;
+        if (rawErr.includes('WECHAT_NOT_FOUND')) errMsg = '未找到微信窗口，请确认微信已登录并在运行中';
+        else if (rawErr.includes('CLIPBOARD')) errMsg = '剪贴板操作失败';
+        for (const s of sprites) s.showWechatNotice('自动回复「' + target.chat + '」失败（' + errMsg + '）：' + draft, image, draft);
+      }
+    } catch (e) {
+      for (const s of sprites) s.showWechatNotice('自动回复异常（' + (e.message || e) + '）：' + draft, image, draft);
+    }
+  } else {
+    // 第四参 = 可复制正文（只有草稿本身，不含「给「X」的草稿：」前缀）→ 点击气泡即复制
+    for (const s of sprites) s.showWechatNotice('给「' + target.chat + '」的草稿：' + draft, image, draft);
+  }
+}
+
+async function pollWechatOnce() {
+  const cfg = config.wechat;
+  if (!cfg || !cfg.enabled) return;
+  const res = await fetchWechatJson(WECHAT_POLL_URL);
+  window.__dshPetDebug.lastWechatPollAt = Date.now();
+  if (!res || !res.ok) {
+    window.__dshPetDebug.lastWechatChanged = 0;
+    window.__dshPetDebug.wechatError = (res && (res.message || res.reason)) || 'sidecar-unavailable';
+    if (!wechatErrorLogged) {
+      wechatErrorLogged = true;
+      console.warn('[dsh-pet] 微信数据通道不可用（在设置里点「一键抓取密钥」）：' + window.__dshPetDebug.wechatError);
+    }
+    return;
+  }
+  wechatErrorLogged = false;
+  window.__dshPetDebug.wechatError = '';
+  const sessions = Array.isArray(res.sessions) ? res.sessions : [];
+  const changed = (Array.isArray(res.changed) ? res.changed : []).filter((c) => S.isMonitoredChat(c, cfg));
+  window.__dshPetDebug.lastWechatChanged = changed.length;
+
+  // 启动后第一次成功轮询：弹一次今日概览（开关控制），不重放历史新消息
+  if (!wechatOverviewShown) {
+    wechatOverviewShown = true;
+    if (cfg.bubbleOverview) await showWechatOverview();
+  }
+
+  if (!res.firstRun && changed.length > 0) {
+    if (cfg.bubbleNewMessage) {
+      const image = await wechatStickerFor(changed[changed.length - 1].lastMessage);
+      for (const s of sprites) s.showWechatNotice(wechatBubbleText(changed), image);
+    }
+    if (cfg.desktopNotify && window.petBridge && typeof petBridge.notify === 'function') {
+      for (const c of changed.slice(0, 3)) {
+        const b = S.formatNewMessageBubble(c);
+        petBridge.notify({ title: b.title, body: b.text });
+      }
+    }
+  }
+
+  await maybeAutoDraft(sessions);
+}
+
+function startWechatLoop() {
+  const cfg = config.wechat;
+  if (!cfg || !cfg.enabled) return;
+  const intervalMs = Math.max(WECHAT_POLL_MIN_MS, (cfg.pollIntervalSec || 20) * 1000);
+  const wechatLoop = async () => {
+    try {
+      await pollWechatOnce();
+    } catch (e) {
+      console.error('[dsh-pet] 微信轮询异常', e);
+    }
+    setTimeout(() => void wechatLoop(), intervalMs);
+  };
+  void wechatLoop();
+}
+
 function startLoops() {
   if (loopsStarted) return;
   loopsStarted = true;
@@ -294,6 +579,9 @@ function startLoops() {
   for (const s of sprites) s.startWhisperLoop();
   // 命令触发气泡：每只宠物独立 1s 轻轮询（startBroadcastLoop）——/chat 命令写入即展示
   for (const s of sprites) s.startBroadcastLoop();
+
+  // 微信联动：全局单条轮询（新消息气泡 / 桌面通知 / 主动起草），周期由 wechat.pollIntervalSec 决定
+  startWechatLoop();
 
   // 手动 /balance 触发：1s 轻量轮询触发计数（端点已禁止缓存），计数变化且余额启用时立即刷新余额并递增 tick
   let triggerBaseline = null;

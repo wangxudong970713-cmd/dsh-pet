@@ -99,6 +99,11 @@ class PetSprite {
     this.whisperText = '';
     // 配图名称（配置 memes 的键；whisperImageEnabled 开启时由 host 随机抽定，随文本一起来）
     this.whisperImage = '';
+    // 可复制的草稿文本（微信面板「帮我起草 / 自动起草」的气泡）：非空时气泡可点击复制。
+    // 气泡在窗口余量区（不在身体命中区），故另配 bubbleCopyHover 放行穿透判定。
+    this.whisperCopy = '';
+    this.bubbleCopyHover = false;
+    this.bubbleCopyTimer = null;
     this.whisperBaseline = false;
     this.prevWhisperTs = 0;
     this.whisperLoopTimer = null;
@@ -168,6 +173,20 @@ class PetSprite {
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
     this.hit.addEventListener('lostpointercapture', (e) => this.onPointerUp(e), { signal: ac.signal });
+    // 「可复制的草稿气泡」交互：气泡在窗口余量区（身体命中区之外），穿透兜底判定默认把它当"余量"。
+    // 悬停时置 bubbleCopyHover，onMouseMove 据此放行整窗可交互；点击即复制草稿（只写剪贴板，绝不发消息）。
+    this.bubble.addEventListener('mouseenter', () => this.onBubbleCopyHover(true), { signal: ac.signal });
+    this.bubble.addEventListener('mouseleave', () => this.onBubbleCopyHover(false), { signal: ac.signal });
+    this.bubble.addEventListener(
+      'click',
+      (e) => {
+        if (!this.whisperCopy) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.copyDraft();
+      },
+      { signal: ac.signal },
+    );
     // 点击穿透：窗口默认整窗穿透（main 设 setIgnoreMouseEvents(true, {forward:true})），
     // 光标进/出身体命中区时翻转可交互；穿透期间 mousemove 由 main 转发进来（forward:true），
     // mouseleave 保证光标离开窗口立即恢复穿透（透明像素不挡下层应用，与浏览器一致）。
@@ -175,9 +194,10 @@ class PetSprite {
     window.addEventListener(
       'mouseleave',
       () => {
-        // 光标离开窗口：菜单若开着立刻收起（菜单是窗口内 DOM，离开即不可达），再恢复穿透；
+        // 光标离开窗口：菜单/微信面板若开着立刻收起（都是窗口内 DOM，离开即不可达），再恢复穿透；
         // 对话弹窗开着则不恢复——弹窗是窗口内 DOM，鼠标还要回来点输入框（与 menuOpen 同守卫）
         this.closeMenu();
+        this.closeWechatPanel();
         if (!this.chatOpen) this.setInteractive(false);
       },
       { signal: ac.signal },
@@ -909,7 +929,10 @@ class PetSprite {
    * 位移分不清"拖拽跟手"和"漫游/抛掷"）。所以由渲染端上报，主进程的兜底通道据此闭嘴。
    */
   inputBusy() {
-    return this.dragState.active || this.menuOpen || this.chatOpen;
+    // wechatOpen 必列：微信面板同样是窗口内 DOM。漏了它，任何一次 syncInputBusy()（拖拽起止、
+    // 菜单开关、气泡循环、弹窗关闭…）都会报 busy=false，主进程兜底通道随即按"光标不在身体上"
+    // 把窗口翻回穿透——面板看得见、点不动也拖不动（这就是"面板无法移动 / 点会话进不去"的根因）。
+    return this.dragState.active || this.menuOpen || this.chatOpen || this.wechatOpen || this.bubbleCopyHover;
   }
 
   /**
@@ -939,8 +962,14 @@ class PetSprite {
       this.setInteractive(true);
       return;
     }
-    // 右键菜单/对话弹窗开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
-    if (this.menuOpen || this.chatOpen) {
+    // 右键菜单/对话弹窗/微信面板开启：整窗保持可交互（悬停菜单项/点输入框都不触发穿透翻转）；关闭后恢复命中区判定
+    if (this.menuOpen || this.chatOpen || this.wechatOpen) {
+      this.setInteractive(true);
+      return;
+    }
+    // 光标悬停在「可点击复制的草稿气泡」上：气泡在窗口余量区（不在身体命中区内），
+    // 不放行就会被下面的命中判定翻回穿透 → 看着能点、实际点不动。
+    if (this.bubbleCopyHover) {
       this.setInteractive(true);
       return;
     }
@@ -1016,6 +1045,8 @@ class PetSprite {
       { label: '对话', action: 'chat' },
       { label: '回到初始位置', action: 'home' },
     );
+    // 微信联动总开关关掉时不显示入口（功能未启用就别占菜单位）
+    if (config && config.wechat && config.wechat.enabled) tools.push({ label: '💬 微信', action: 'wechat' });
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
     this.menuOpen = true;
@@ -1062,6 +1093,10 @@ class PetSprite {
     }
     if (leaf.action === 'chat') {
       this.showChatFromMenu(); // 打开对话弹窗（记忆经 host /chat 读写，浏览器/桌面同一实例共享）
+      return;
+    }
+    if (leaf.action === 'wechat') {
+      this.showWechatFromMenu(); // 打开微信联动面板（只读：会话/历史/概览 + 逐条起草 + 一键复制）
       return;
     }
     if (leaf.action === 'home') {
@@ -1125,9 +1160,10 @@ class PetSprite {
         if (state.ok) {
           this.showWhisper(state.text, state.image);
         } else {
-          const msg = state.reason === 'provider-missing'
-            ? '还没配置 API 密钥哦，请右键打开设置~'
-            : ('碎碎念失败啦：' + (state.message || state.reason));
+          const msg =
+            state.reason === 'provider-missing'
+              ? '还没配置 API 密钥哦，请右键打开设置~'
+              : '碎碎念失败啦：' + (state.message || state.reason);
           this.showWhisper(msg);
           console.warn('[dsh-pet] 菜单碎碎念失败 reason=' + state.reason + (state.message ? ' ' + state.message : ''));
         }
@@ -1175,6 +1211,51 @@ class PetSprite {
     this.setInteractive(true);
   }
 
+  // 关闭微信面板（幂等）：卸载面板 DOM 并由 onClose 回调交还穿透判定。
+  // 面板自己也会因「点面板外 / Escape」关闭，这里只是把同一条路径暴露给 sprite（如光标离开窗口）。
+  closeWechatPanel() {
+    if (!this.wechatClose) return;
+    const close = this.wechatClose;
+    this.wechatClose = null; // 先清引用：panel.close() 会回调 onClose（幂等），清掉可防重入
+    close();
+  }
+
+  // 「微信」菜单：打开微信联动面板（只读：会话列表 / 历史 / 今日概览，逐条起草 + 一键复制）。
+  // 边界：只生成与复制，没有任何发送到微信的路径。面板是窗口内 DOM，期间整窗保持可交互（同对话弹窗）。
+  showWechatFromMenu() {
+    if (this.wechatClose) {
+      this.closeWechatPanel();
+      return; // 已开着：先关旧的
+    }
+    const panel = window.PetWechatPanel;
+    if (!panel || typeof panel.mountWechatPanel !== 'function') {
+      console.error('[dsh-pet] 微信面板组件未加载（wechat-panel.js）');
+      return;
+    }
+    const rect = this.hit.getBoundingClientRect();
+    const m = panel.mountWechatPanel({
+      config: config && config.wechat ? config.wechat : {},
+      x: Math.max(4, rect.right + 6),
+      y: Math.max(4, rect.top + 6),
+      clamp: this.visibleClampRect(),
+      onClose: () => {
+        this.wechatClose = null;
+        this.wechatOpen = false;
+        window.__dshPetDebug.wechatOpen = false;
+        this.syncInputBusy();
+        if (!this.menuOpen && !this.chatOpen) this.setInteractive(false); // 面板关了且无其它占用：恢复穿透
+      },
+      onMessage: (info) => {
+        console.info('[dsh-pet] 微信面板：' + ((info && info.title) || ''));
+      },
+    });
+    this.wechatClose = m.close;
+    this.wechatOpen = true; // 穿透守卫：面板期间整窗保持可交互，光标移进去不被翻回穿透
+    window.__dshPetDebug.wechatOpen = true;
+    this.syncInputBusy();
+    this.setInteractive(true);
+  }
+
   // 「回到初始位置」菜单：停掉漫游/移动，清掉拖拽/漫游留下的会话位置，回到配置角落
   goHome() {
     this.stopThrow();
@@ -1183,12 +1264,47 @@ class PetSprite {
     this.position();
   }
 
+  // 悬停在「可复制的草稿气泡」上：放行穿透判定（见 onMouseMove / inputBusy）。
+  // 气泡在窗口余量区，不放行就会被命中区判定翻回穿透 → 气泡看得见、点不动。
+  onBubbleCopyHover(on) {
+    const next = !!on && !!this.whisperCopy && this.whisperOn;
+    if (next === this.bubbleCopyHover) return;
+    this.bubbleCopyHover = next;
+    window.__dshPetDebug.bubbleCopyHover = next;
+    this.syncInputBusy();
+    if (next) this.setInteractive(true);
+    else if (!this.menuOpen && !this.chatOpen && !this.wechatOpen) this.setInteractive(false);
+  }
+
+  // 点击草稿气泡 = 复制文本到剪贴板（**只写剪贴板**：没有任何发送到微信的路径）。
+  copyDraft() {
+    const text = this.whisperCopy;
+    if (!text) return;
+    if (window.petBridge && typeof window.petBridge.copyText === 'function') {
+      window.petBridge.copyText(text);
+    } else {
+      console.warn('[dsh-pet] petBridge.copyText 不可用，草稿未复制');
+      return;
+    }
+    this.bubbleCopyDone = true;
+    this.renderBubble();
+    console.log('[dsh-pet] 草稿已复制到剪贴板（' + text.length + ' 字）');
+    if (this.bubbleCopyTimer !== null) window.clearTimeout(this.bubbleCopyTimer);
+    this.bubbleCopyTimer = window.setTimeout(() => {
+      this.bubbleCopyTimer = null;
+      this.bubbleCopyDone = false;
+      this.renderBubble();
+    }, 1500);
+  }
+
   renderBubble() {
     // 气泡优先级：工作状态 > 碎碎念 > 余额（工作状态是 DSH 真实状态，最要紧；三者都关时隐藏）
     // 工作气泡与碎碎念同款弹窗样式：宽度自适应 + 自动换行（is-whisper：正常 white-space、宽随内容）
     // 配图标记交给 CSS：带图时取消 min-width（样式在 shared 的 MEME_BUBBLE_CSS，两端同一份）。
     // 图片 URL 与视频同规则：传 BASE 前缀（桌面是 file:// 页面，必须绝对地址）
     const whisperImg = this.whisperOn ? S.createMemeImage(this.whisperImage, BASE) : null;
+    // 「可复制」标记每个分支重算：只有非空草稿文本的气泡才接收指针事件（其余气泡保持穿透）
+    this.bubble.classList.remove('is-copyable');
     this.bubble.classList.toggle(
       'is-whisper',
       // 余额「文字说明」（不可用状态）同样要换行变体：默认 nowrap 会把长文案顶出宠物宽度
@@ -1219,6 +1335,14 @@ class PetSprite {
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
       this.bubble.appendChild(line);
+      // 草稿气泡：加一行提示（点击气泡即复制）；复制成功后 1.5s 内改显「已复制 ✓」
+      if (this.whisperCopy) {
+        const hint = document.createElement('div');
+        hint.className = 'pet-bub-copy';
+        hint.textContent = this.bubbleCopyDone ? '已复制 ✓' : '点击复制';
+        this.bubble.appendChild(hint);
+        this.bubble.classList.add('is-copyable');
+      }
       this.bubble.classList.add('is-on');
       window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
       return;

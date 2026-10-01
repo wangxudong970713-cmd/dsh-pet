@@ -23,10 +23,21 @@
  * 就是 EPIPE，而 Electron 默认处理器只会弹框且不退出）。故有「宿主存活」一节：管道守卫 +
  * 宿主 PID 探测，宿主没了就自己退——见那里的注释。
  */
-const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  shell,
+  protocol,
+  Tray,
+  Menu,
+  clipboard,
+  Notification,
+} = require('electron');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
-const { readFileSync, writeFileSync } = require('node:fs');
+const { execFileSync, spawn } = require('node:child_process');
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore } = require('./pointer-target.js');
@@ -233,7 +244,6 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
@@ -701,6 +711,142 @@ app.whenReady().then(() => {
     return await standaloneService.testConnection(params);
   });
 
+  // ---- 微信联动：剪贴板与系统通知 ----
+  // 渲染端是 file:// 页面（非 secure context，navigator.clipboard 不可用），复制只能走主进程。
+  ipcMain.handle('wechat:copy-text', (event, text) => {
+    try {
+      clipboard.writeText(String(text == null ? '' : text));
+      return true;
+    } catch (e) {
+      console.warn('[dsh-pet] wechat copy failed:', e);
+      return false;
+    }
+  });
+  // 微信单次自动化发送助手函数
+  function execWechatSendOnce(scriptPath, chat, text) {
+    return new Promise((resolve) => {
+      const child = spawn('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath,
+        '-TargetName',
+        chat,
+        '-Text',
+        text,
+      ]);
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => {
+        stdout += d.toString();
+      });
+      child.stderr.on('data', (d) => {
+        stderr += d.toString();
+      });
+      child.on('error', (err) => {
+        resolve({ ok: false, error: err.message });
+      });
+      child.on('close', (code) => {
+        try {
+          const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          const jsonLine = lines.find((l) => l.startsWith('{') && l.endsWith('}'));
+          if (jsonLine) {
+            const parsed = JSON.parse(jsonLine);
+            return resolve(parsed);
+          }
+          if (code === 0) {
+            return resolve({ ok: true });
+          }
+          return resolve({ ok: false, error: stderr || stdout || ('脚本退出码: ' + code) });
+        } catch (e) {
+          resolve({ ok: false, error: '解析自动化输出失败: ' + e.message + ', 输出: ' + stdout });
+        }
+      });
+    });
+  }
+
+  // 微信自动回复：调用 PowerShell 自动化脚本模拟粘贴并回车发送（带容错重试机制）
+  ipcMain.handle('wechat:auto-reply', async (event, payload = {}) => {
+    const chat = String(payload.chat || '').trim();
+    const text = String(payload.text || '').trim();
+    if (!chat || !text) {
+      return { ok: false, error: '缺少聊天目标或发送内容' };
+    }
+    if (process.platform !== 'win32') {
+      return { ok: false, error: '自动回复功能目前仅支持 Windows 平台' };
+    }
+    const scriptPath = path.join(__dirname, 'scripts', 'wechat-send.ps1');
+    if (!existsSync(scriptPath)) {
+      return { ok: false, error: '未找到自动化脚本: ' + scriptPath };
+    }
+
+    const MAX_RETRIES = 3;
+    let lastError = '';
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const result = await execWechatSendOnce(scriptPath, chat, text);
+      if (result && result.ok) {
+        if (attempt > 1) {
+          console.log(`[wechat:auto-reply] 第 ${attempt} 次尝试发送成功: ${chat}`);
+        }
+        return { ok: true, attempts: attempt };
+      }
+
+      lastError = (result && result.error) ? String(result.error) : '发送未响应';
+      console.warn(`[wechat:auto-reply] 第 ${attempt} 次发送未成功: ${lastError}`);
+
+      // 微信未运行或完全未找到主窗口时，属于致命前置条件不满足，直接终止重试
+      if (lastError.includes('WECHAT_NOT_FOUND')) {
+        return {
+          ok: false,
+          error: '未找到电脑微信窗口，请确保微信已启动并登录',
+          attempts: attempt,
+        };
+      }
+
+      if (attempt < MAX_RETRIES) {
+        // 退避延时：第1次失败等 600ms，第2次失败等 1200ms
+        const delay = attempt * 600;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+
+    return {
+      ok: false,
+      error: lastError,
+      attempts: MAX_RETRIES,
+    };
+  });
+  ipcMain.on('wechat:notify', (event, payload = {}) => {
+    const title = String(payload.title || '微信新消息');
+    const body = String(payload.body || '');
+    try {
+      if (Notification.isSupported()) {
+        new Notification({ title, body, silent: false }).show();
+      }
+    } catch (e) {
+      console.warn('[dsh-pet] wechat notify failed:', e);
+    }
+    // 任务栏闪烁：让用户即使没看桌面也能注意到（Windows 上持续闪到窗口获得焦点）
+    try {
+      for (const win of windows.values()) {
+        if (!win.isDestroyed()) win.flashFrame(true);
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  // 任一宠物窗口获得焦点即停止闪烁
+  app.on('browser-window-focus', () => {
+    try {
+      for (const win of windows.values()) {
+        if (!win.isDestroyed()) win.flashFrame(false);
+      }
+    } catch {
+      /* ignore */
+    }
+  });
 
   // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
   ipcMain.on('pet:set-bounds', (event, bounds) => {
@@ -1025,6 +1171,95 @@ app.whenReady().then(() => {
               }
               return out;
             })(),
+            // 微信联动自检：走真实用户路径（右键菜单 → 点「💬 微信」）打开面板，
+            // 并核对轮询是否真的打到 /wechat/poll（lastWechatPollAt 由 events.js 写入）。
+            wechatSmoke: await (async function () {
+              const d = window.__dshPetDebug;
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              const out = {
+                panelApi: !!(window.PetWechatPanel && typeof window.PetWechatPanel.mountWechatPanel === 'function'),
+                wechatEnabled: !!(typeof config !== 'undefined' && config && config.wechat && config.wechat.enabled),
+                polledAt: (d && d.lastWechatPollAt) || 0,
+                changed: (d && d.lastWechatChanged) || 0,
+                pollError: (d && d.wechatError) || null,
+                menuHasWechat: false,
+                mounted: false,
+                panelOpenFlag: null,
+                panelText: '',
+                closed: false,
+              };
+              // 没开联动（或面板脚本没加载）时到此为止：此时菜单里也不该有入口
+              if (!out.panelApi || !out.wechatEnabled) return out;
+              const sprite = typeof sprites !== 'undefined' ? sprites[0] : null;
+              if (!sprite) return out;
+
+              // A) 先直接调用（隔离面板自身的问题，不掺菜单路径）
+              const direct = { err: null, mountedSync: false, openFlagSync: null, text: '', alive: false, openFlagLater: null, textLater: '' };
+              try {
+                sprite.showWechatFromMenu();
+                direct.mountedSync = !!document.querySelector('.dsh-pet-wechat');
+                direct.openFlagSync = d ? d.wechatOpen === true : null;
+              } catch (err) {
+                direct.err = String((err && err.stack) || err);
+              }
+              await sleep(1400); // 面板挂载后会拉 /wechat/status + /wechat/sessions + /wechat/overview
+              const alivePanel = document.querySelector('.dsh-pet-wechat');
+              direct.alive = !!alivePanel;
+              direct.openFlagLater = d ? d.wechatOpen === true : null;
+              direct.text = alivePanel ? String(alivePanel.textContent || '').replace(/\s+/g, ' ').slice(0, 240) : '';
+              out.direct = direct;
+              out.panelErrors = d && Array.isArray(d.errors) ? d.errors.slice(-3) : null;
+              if (alivePanel) {
+                sprite.wechatClose();
+                await sleep(80);
+                out.directClosed = !document.querySelector('.dsh-pet-wechat');
+              }
+
+              // B) 再走真实用户路径：右键菜单 → 点「💬 微信」
+              sprite.closeMenu();
+              await sleep(60);
+              const hit = document.querySelector('.pet-hit');
+              if (!hit) return out;
+              hit.dispatchEvent(
+                new MouseEvent('contextmenu', {
+                  bubbles: true,
+                  cancelable: true,
+                  button: 2,
+                  clientX: 420,
+                  clientY: 300,
+                  screenX: 420,
+                  screenY: 300,
+                }),
+              );
+              await sleep(80);
+              const menu = document.querySelector('.dsh-pet-menu');
+              const items = menu ? Array.prototype.slice.call(menu.querySelectorAll('.dsh-pet-menu-item')) : [];
+              const item = items.filter((n) => n.textContent.indexOf('微信') >= 0)[0] || null;
+              out.menuHasWechat = !!item;
+              if (item) {
+                try {
+                  item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                  out.mountedSync = !!document.querySelector('.dsh-pet-wechat');
+                  out.openFlagSync = d ? d.wechatOpen === true : null;
+                } catch (err) {
+                  out.clickErr = String((err && err.stack) || err);
+                }
+              }
+              await sleep(1800); // 面板挂载后会拉 /wechat/status + /wechat/sessions + /wechat/overview
+              const panel = document.querySelector('.dsh-pet-wechat');
+              out.mounted = !!panel;
+              out.panelOpenFlag = d ? d.wechatOpen === true : null;
+              out.panelText = panel ? String(panel.textContent || '').replace(/\s+/g, ' ').slice(0, 240) : '';
+              out.polledAt = (d && d.lastWechatPollAt) || 0;
+              out.changed = (d && d.lastWechatChanged) || 0;
+              out.pollError = (d && d.wechatError) || null;
+              if (panel && sprite && typeof sprite.wechatClose === 'function') {
+                sprite.wechatClose();
+                await sleep(80);
+                out.closed = !document.querySelector('.dsh-pet-wechat');
+              }
+              return out;
+            })(),
           }))()`);
           console.log(
             '[dsh-pet-desktop-helper] smoke dump: windows=' +
@@ -1053,12 +1288,72 @@ app.whenReady().then(() => {
           const image = await first.webContents.capturePage();
           writeFileSync(smokeOut, image.toPNG());
           console.log('[dsh-pet-desktop-helper] smoke capture:', smokeOut);
+
+          // 设置窗口冒烟：设置页是独立的 BrowserWindow（settings.html + settings.js），与宠物窗完全隔离，
+          // 这里单独开一次、等它加载并填充完表单、读一遍 DOM、再截一张图。没有这一步，「微信联动」这类
+          // 纯表单面就只能靠人眼回归——HTML 里的 id 少一个、settings.js 里少写一处绑定都发现不了。
+          const settingsOut = /\.png$/i.test(smokeOut)
+            ? smokeOut.replace(/\.png$/i, '-settings.png')
+            : smokeOut + '-settings.png';
+          // 注意：渲染端那个 `sleep` 是在 executeJavaScript 的模板串里定义的，主进程作用域拿不到，
+          // 这里必须自己来一份。
+          const waitMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          openSettingsWindow();
+          const settings = settingsWindow;
+          if (settings && !settings.isDestroyed()) {
+            for (let i = 0; i < 60 && settings.webContents.isLoading(); i += 1) await waitMs(50);
+            // settings.js 的 window.settingsBridge.getSettings() 是异步 IPC，表单要等它回来才填值
+            await waitMs(900);
+            settings.webContents.on('console-message', (event) => {
+              console.log(`[settings:${event.level}] ${event.message}`);
+            });
+            const settingsDump = await settings.webContents.executeJavaScript(`(() => {
+              const q = (id) => document.getElementById(id);
+              const ids = [
+                'wechatEnabled', 'wechatBody', 'btnWechatStatus', 'btnWechatInit', 'wechatStatus',
+                'wechatIndividualMode', 'wechatIndividualList', 'wechatGroupMode', 'wechatGroupList',
+                'wechatAutoDraftMode', 'wechatAutoDraftList', 'wechatSkipSubscriptions', 'wechatSkipFolded',
+                'wechatFoldedList', 'wechatBubbleNewMessage', 'wechatBubbleOverview', 'wechatDesktopNotify',
+                'wechatStickerEcho', 'wechatPollInterval', 'wechatDraftCooldown', 'wechatDraftMaxPerHour',
+                'wechatHistoryLimit', 'wechatOverviewCount', 'wechatDraftPrompt', 'btnWechatPromptReset',
+                'wechatIndividualListGroup', 'wechatGroupListGroup', 'wechatAutoDraftListGroup',
+              ];
+              const missing = ids.filter((id) => !q(id));
+              return {
+                missing,
+                found: ids.length - missing.length,
+                cardTitles: [...document.querySelectorAll('section.card h2')].map((n) => n.textContent.trim()),
+                wechatEnabled: q('wechatEnabled') ? q('wechatEnabled').checked : null,
+                bodyHidden: q('wechatBody') ? getComputedStyle(q('wechatBody')).display === 'none' : null,
+                mode: q('wechatIndividualMode') ? q('wechatIndividualMode').value : null,
+                pollInterval: q('wechatPollInterval') ? q('wechatPollInterval').value : null,
+                promptLen: q('wechatDraftPrompt') ? q('wechatDraftPrompt').value.length : -1,
+                status: q('wechatStatus') ? q('wechatStatus').textContent.trim().slice(0, 160) : '',
+              };
+            })()`);
+            console.log('[dsh-pet-desktop-helper] smoke settings dump:', JSON.stringify(settingsDump));
+            const shot = await settings.webContents.capturePage();
+            writeFileSync(settingsOut, shot.toPNG());
+            console.log('[dsh-pet-desktop-helper] smoke settings capture:', settingsOut);
+          } else {
+            console.log('[dsh-pet-desktop-helper] smoke settings: window not created');
+          }
         }
       } catch (error) {
         console.error('[dsh-pet-desktop-helper] smoke capture failed:', error);
       }
       setTimeout(() => app.quit(), 500);
     }, afterMs);
+  }
+});
+
+// 退出前收掉微信 sidecar：这个 Python 进程是被桌宠拉起来的，桌宠没了它也必须走，
+// 否则下次启动会留下孤儿进程一直占着微信库句柄。
+app.on('before-quit', () => {
+  try {
+    standaloneService.killWechatHelperSync();
+  } catch (e) {
+    console.warn('[dsh-pet] stop wechat helper on quit failed:', e);
   }
 });
 

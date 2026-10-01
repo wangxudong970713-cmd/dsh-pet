@@ -67,6 +67,20 @@ contextBridge.exposeInMainWorld('petBridge', {
   onReloadConfig(cb) {
     ipcRenderer.on('pet:reload-config', () => cb());
   },
+  // ---- 微信联动 ----
+  // 复制文本到剪贴板：file:// 页面不是 secure context，navigator.clipboard 不可用，
+  // 必须交给主进程的 electron clipboard。resolve(true/false) 表示是否成功。
+  copyText(text) {
+    return ipcRenderer.invoke('wechat:copy-text', String(text == null ? '' : text));
+  },
+  // 系统通知（微信新消息等）。微信联动专用，与桌宠本身的对话通知互不影响。
+  notify(payload) {
+    ipcRenderer.send('wechat:notify', payload || {});
+  },
+  // 微信自动回复：调用主进程执行自动化脚本发送给指定联系人/群
+  sendAutoReply(payload) {
+    return ipcRenderer.invoke('wechat:auto-reply', payload || {});
+  },
 });
 
 contextBridge.exposeInMainWorld('settingsBridge', {
@@ -74,4 +88,3 @@ contextBridge.exposeInMainWorld('settingsBridge', {
   saveSettings: (cfg) => ipcRenderer.invoke('settings:save', cfg),
   testConnection: (params) => ipcRenderer.invoke('settings:test', params),
 });
-
