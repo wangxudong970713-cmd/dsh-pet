@@ -624,9 +624,9 @@ let latestUpdateInfo = null;
 function getAppVersion() {
   try {
     const pkg = JSON.parse(readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
-    return pkg.version || '0.2.11';
+    return pkg.version || '0.3.0';
   } catch {
-    return '0.2.11';
+    return '0.3.0';
   }
 }
 

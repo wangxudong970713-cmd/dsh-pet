@@ -124,7 +124,7 @@ try {
 // 写入生产 package.json
 const prodPkg = {
   name: 'dsh-pet',
-  version: '0.2.11',
+  version: '0.3.0',
   description: 'dsh-pet 桌面宠物独立版',
   main: 'runtime/electron-helper/main.js',
 };
