@@ -239,17 +239,6 @@ dsh plugin --profile web remove dsh-pet
 
 删之前先退出 DSH（桌面宠物随之退出）。缓存类删了无影响；`$DSH_HOME/dsh-pet/` 删了会丢配置与对话记忆（想保留就先备份 `main-config.json`）。
 
-## 🖥️ 运行效果
-
-宠物实际运行在 DSH Web 界面中的样子：
-
-<p>
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/assets/screenshots/dsh-pet-running-1.png" width="380" alt="dsh-pet running in DSH Web UI 1" title="dsh-pet running in DSH Web UI 1">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/assets/screenshots/dsh-pet-running-2.png" width="380" alt="dsh-pet running in DSH Web UI 2" title="dsh-pet running in DSH Web UI 2">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/assets/screenshots/dsh-pet-running-7.png" width="380" alt="dsh-pet running in DSH Web UI 7" title="dsh-pet running in DSH Web UI 7">
-  <img src="https://raw.githubusercontent.com/PC2005-cloud/dsh-pet/main/assets/screenshots/dsh-pet-running-8.png" width="380" alt="dsh-pet running in DSH Web UI 8" title="dsh-pet running in DSH Web UI 8">
-</p>
-
 ## 🎬 效果预览
 
 > 动画为透明背景；GIF 预览中透明部分显示为页面底色，实际播放为透明。
