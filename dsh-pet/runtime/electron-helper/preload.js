@@ -81,10 +81,15 @@ contextBridge.exposeInMainWorld('petBridge', {
   sendAutoReply(payload) {
     return ipcRenderer.invoke('wechat:auto-reply', payload || {});
   },
+  // 新版本推送通知
+  onNewVersion(cb) {
+    ipcRenderer.on('pet:new-version', (e, info) => cb(info));
+  },
 });
 
 contextBridge.exposeInMainWorld('settingsBridge', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (cfg) => ipcRenderer.invoke('settings:save', cfg),
   testConnection: (params) => ipcRenderer.invoke('settings:test', params),
+  checkUpdate: (opts) => ipcRenderer.invoke('update:check', opts),
 });

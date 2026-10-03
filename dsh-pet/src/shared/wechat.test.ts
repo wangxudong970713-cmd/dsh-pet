@@ -516,6 +516,22 @@ describe('buildDraftSystemPrompt / cleanDraft —— 提示词与输出清洗', 
     assert.equal(g, '给项目群（群聊）写');
   });
 
+  test('联系人专属口吻优先于全局口吻，未命中回退全局', () => {
+    const customCfg = cfg({
+      draftPrompt: '全局给{name}写',
+      contactPersonas: {
+        小明: '专属商务口吻给{name}，参考{count}条',
+        '*部门*': '部门通知口吻给{name}',
+      },
+    });
+    // 精确命中小明
+    assert.equal(buildDraftSystemPrompt(customCfg, chat('wxid_xm', '小明'), 3), '专属商务口吻给小明，参考3条');
+    // 通配符命中部门群
+    assert.equal(buildDraftSystemPrompt(customCfg, chat('room1@chatroom', '技术研发部门群', true), 5), '部门通知口吻给技术研发部门群（群聊）');
+    // 未命中回退全局
+    assert.equal(buildDraftSystemPrompt(customCfg, chat('wxid_other', '李四'), 2), '全局给李四写');
+  });
+
   test('清洗掉「回复：」前缀、包裹引号与换行，压成一条', () => {
     assert.equal(cleanDraft('回复：好的呀'), '好的呀');
     assert.equal(cleanDraft('“我看看”'), '我看看');

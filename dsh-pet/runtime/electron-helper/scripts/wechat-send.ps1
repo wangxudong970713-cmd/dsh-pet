@@ -26,6 +26,25 @@ public class Win32Wechat {
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
@@ -76,6 +95,52 @@ public class Win32Wechat {
     public struct POINT {
         public int X;
         public int Y;
+    }
+
+    public static IntPtr FindWechatWindow() {
+        IntPtr h1 = FindWindow("WeChatMainWndForPC", null);
+        if (h1 != IntPtr.Zero) return h1;
+
+        IntPtr h2 = FindWindow("Qt51514QWindowIcon", null);
+        if (h2 != IntPtr.Zero) return h2;
+
+        IntPtr bestHwnd = IntPtr.Zero;
+        int maxArea = 0;
+
+        EnumWindows((hWnd, lParam) => {
+            uint pid = 0;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == 0) return true;
+
+            try {
+                System.Diagnostics.Process proc = System.Diagnostics.Process.GetProcessById((int)pid);
+                string procName = proc.ProcessName.ToLower();
+                if (procName == "weixin" || procName == "wechat") {
+                    System.Text.StringBuilder sbClass = new System.Text.StringBuilder(256);
+                    GetClassName(hWnd, sbClass, 256);
+                    string className = sbClass.ToString();
+
+                    RECT r;
+                    GetWindowRect(hWnd, out r);
+                    int w = r.Right - r.Left;
+                    int h = r.Bottom - r.Top;
+                    int area = w * h;
+
+                    if (className.Contains("Qt") || className.Contains("WeChat") || className.Contains("Weixin") || className.Contains("ChatWnd")) {
+                        if (w > 200 && h > 200 && area > maxArea) {
+                            maxArea = area;
+                            bestHwnd = hWnd;
+                        }
+                    } else if (bestHwnd == IntPtr.Zero && w > 300 && h > 300) {
+                        maxArea = area;
+                        bestHwnd = hWnd;
+                    }
+                }
+            } catch {}
+            return true;
+        }, IntPtr.Zero);
+
+        return bestHwnd;
     }
 
     public static void ResetModifiers() {
@@ -202,13 +267,10 @@ function Set-SafeClipboard {
 try {
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
 
-    $hwnd = [Win32Wechat]::FindWindow("WeChatMainWndForPC", $null)
+    $hwnd = [Win32Wechat]::FindWechatWindow()
     if (-not $hwnd -or $hwnd -eq [IntPtr]::Zero) {
-        $hwnd = [Win32Wechat]::FindWindow("Qt51514QWindowIcon", $null)
-    }
-    if (-not $hwnd -or $hwnd -eq [IntPtr]::Zero) {
-        $proc = Get-Process -Name "WeChat", "Weixin" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if ($proc) {
+        $proc = Get-Process -Name "WeChat", "Weixin" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($proc -and $proc.MainWindowHandle -ne 0) {
             $hwnd = $proc.MainWindowHandle
         }
     }

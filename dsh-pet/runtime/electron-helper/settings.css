@@ -825,3 +825,76 @@ select:focus {
   padding: 8px;
   resize: vertical;
 }
+
+/* 专属口吻标签与弹窗 */
+.badge-persona-btn {
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 3px;
+  opacity: 0.8;
+  transition: opacity 0.15s;
+}
+
+.badge-persona-btn:hover {
+  opacity: 1;
+}
+
+.wechat-badge.has-persona {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(2px);
+}
+
+.modal-card {
+  background: #ffffff;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 440px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 18px 20px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.modal-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+
+.persona-tips {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 10px;
+}
+
+.persona-presets {
+  margin-bottom: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+}

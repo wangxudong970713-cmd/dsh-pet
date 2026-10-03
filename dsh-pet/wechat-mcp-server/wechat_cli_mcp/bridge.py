@@ -133,22 +133,30 @@ def _default_process_name() -> str:
 
 def _wechat_running() -> bool:
     """微信进程是否在运行（密钥提取的前提）。"""
-    name = _default_process_name()
-    try:
-        if os.name == "nt":
-            proc = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return name.lower() in (proc.stdout or "").lower()
-        proc = subprocess.run(
-            ["pgrep", "-f", name], capture_output=True, text=True, timeout=10
-        )
-        return proc.returncode == 0
-    except Exception:
-        return False
+    names = [_default_process_name()]
+    if os.name == "nt":
+        names.extend(["Weixin.exe", "WeChat.exe"])
+        names = list(dict.fromkeys(names))
+    for name in names:
+        try:
+            if os.name == "nt":
+                proc = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if name.lower() in (proc.stdout or "").lower():
+                    return True
+            else:
+                proc = subprocess.run(
+                    ["pgrep", "-f", name], capture_output=True, text=True, timeout=10
+                )
+                if proc.returncode == 0:
+                    return True
+        except Exception:
+            pass
+    return False
 
 
 def _newest_mtime(path: str) -> float:

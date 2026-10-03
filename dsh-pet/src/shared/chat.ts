@@ -46,6 +46,66 @@ export async function sendChat(baseUrl: string, text: string): Promise<ChatSendS
   return image ? { ok: true, reply, image, ts: Number(o.ts) || 0 } : { ok: true, reply, ts: Number(o.ts) || 0 };
 }
 
+export interface ChatStreamDelta {
+  think?: string;
+  thinkEnd?: boolean;
+  text?: string;
+  meme?: string;
+  error?: string;
+  done?: boolean;
+}
+
+export async function sendChatStream(
+  url: string,
+  text: string,
+  onDelta: (delta: ChatStreamDelta) => void
+): Promise<void> {
+  const reqUrl = url + (url.includes('?') ? '&' : '?') + 'stream=1';
+  const res = await fetch(reqUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  if (!res.body) throw new Error('Response body is null');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith(':')) continue;
+      if (line === 'data: [DONE]') {
+        onDelta({ done: true });
+        return;
+      }
+      if (line.startsWith('data: ')) {
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr) continue;
+        try {
+          const item = JSON.parse(jsonStr);
+          if (item.type === 'think') onDelta({ think: item.delta });
+          else if (item.type === 'think_end') onDelta({ thinkEnd: true });
+          else if (item.type === 'text') onDelta({ text: item.delta });
+          else if (item.type === 'meme') onDelta({ meme: item.name });
+          else if (item.type === 'error') onDelta({ error: item.message });
+          else if (item.type === 'done') onDelta({ done: true });
+        } catch {}
+      }
+    }
+  }
+  onDelta({ done: true });
+}
+
 /** 弹窗样式 —— 两端注入同一份（与菜单 MENU_CSS 同理；视觉对齐浏览器/桌面）。
  *  最简形态：一条自适应输入框（无标题/无按钮）——初始小宽度（160px），
  *  随输入自动增宽（封顶 340px），到上限后自动折行增高；回车发送，Esc 或点外关闭。
@@ -107,12 +167,14 @@ export function mountChatDialog(opts: {
   /** 发送成功后的回复（弹窗此时已关闭）；调用方负责播动画 + 气泡展示。
    *  image = 本次配图名称（无配图时 undefined）——与碎碎念同一展示契约 */
   onReply?: (reply: string, image?: string) => void;
+  onStreamStart?: () => void;
+  onStreamDelta?: (delta: ChatStreamDelta) => void;
   onClose?: () => void;
   /** 弹窗允许占用的矩形（视口局部坐标）；缺省 = 整个视口 */
   clamp?: { x: number; y: number; w: number; h: number };
 }): ChatDialogMount {
   injectChatCss();
-  const { petId, x, y, onReply, onClose, clamp } = opts;
+  const { petId, x, y, onReply, onStreamStart, onStreamDelta, onClose, clamp } = opts;
   const baseUrl = opts.baseUrl ?? '/dsh-pet-7340/chat';
   const withPet = baseUrl + '?pet=' + encodeURIComponent(petId);
   const c =
@@ -190,6 +252,16 @@ export function mountChatDialog(opts: {
     if (!text) return;
     sending = true;
     input.disabled = true;
+
+    if (onStreamDelta) {
+      close();
+      if (onStreamStart) onStreamStart();
+      sendChatStream(withPet, text, onStreamDelta).catch((e) => {
+        onStreamDelta({ error: String(e && e.message ? e.message : e) });
+      });
+      return;
+    }
+
     sendChat(withPet, text)
       .then((state) => {
         if (state.ok) {

@@ -105,7 +105,18 @@ function injectAssets() {
     '/pic/cursor-grab.png") 16 16, grab}' +
     '.pet-hit.dragging{cursor:url("' +
     BASE +
-    '/pic/cursor-grabbing.png") 16 16, grabbing}';
+    '/pic/cursor-grabbing.png") 16 16, grabbing}' +
+    '.pet-think-fold{margin-bottom:6px;font-size:12px;background:rgba(0,0,0,.04);border-radius:6px;padding:4px 6px;max-width:280px;text-align:left;}' +
+    '.pet-think-summary{cursor:pointer;color:rgba(0,0,0,.5);font-size:11px;outline:none;user-select:none;}' +
+    '.pet-think-summary:hover{color:rgba(0,0,0,.75);}' +
+    '.pet-think-body{margin-top:4px;color:rgba(0,0,0,.65);line-height:1.4;white-space:pre-wrap;max-height:120px;overflow-y:auto;font-size:11px;}' +
+    '.pet-bub-actions{display:flex;gap:4px;margin-top:6px;justify-content:flex-end;align-items:center;}' +
+    '.pet-bub-btn{border:none;background:rgba(0,0,0,.08);color:#2b2b2b;border-radius:4px;padding:2px 6px;font-size:11px;cursor:pointer;font-family:inherit;transition:all .15s;}' +
+    '.pet-bub-btn:hover{background:rgba(0,0,0,.15);}' +
+    '.pet-bub-btn.send{background:#3f7dd8;color:#fff;}' +
+    '.pet-bub-btn.send:hover{background:#3569b8;}' +
+    '.pet-bub-btn.cancel{background:rgba(217,79,61,.12);color:#d94f3d;}' +
+    '.pet-bub-btn.cancel:hover{background:rgba(217,79,61,.2);}';
   document.head.appendChild(style);
   // 统一右键菜单样式（与浏览器注入同一份 MENU_CSS）
   const menuStyle = document.createElement('style');
@@ -133,6 +144,16 @@ if (window.petBridge && window.petBridge.onResetPosition) {
 if (window.petBridge && window.petBridge.onReloadConfig) {
   window.petBridge.onReloadConfig(() => {
     void boot();
+  });
+}
+
+// 新版本发布气泡轻提醒
+if (window.petBridge && window.petBridge.onNewVersion) {
+  window.petBridge.onNewVersion((info) => {
+    if (!info || !info.latestVersion) return;
+    for (const s of sprites) {
+      s.showEventBubble(`✨ 发现桌宠新版本 v${info.latestVersion}，右键打开设置中心可下载~`, '', 'version');
+    }
   });
 }
 

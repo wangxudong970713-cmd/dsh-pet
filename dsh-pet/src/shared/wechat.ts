@@ -57,6 +57,8 @@ export interface WechatConfig {
   overviewCount: number;
   /** 起草用的系统提示词模板，支持 {name} / {count} 占位 */
   draftPrompt: string;
+  /** 联系人/群聊专属起草口吻提示词映射（备注名/群名/wxid -> 专属 Prompt） */
+  contactPersonas?: Record<string, string>;
 }
 
 export const DEFAULT_WECHAT_CONFIG: WechatConfig = {
@@ -79,6 +81,7 @@ export const DEFAULT_WECHAT_CONFIG: WechatConfig = {
   draftMaxPerHour: 12,
   historyLimit: 12,
   overviewCount: 5,
+  contactPersonas: {},
   draftPrompt: [
     '你在替主人起草一条微信回复。要求：',
     '1. 用主人的口吻，像本人随手打字，不要客套开场、不要解释你在做什么；',
@@ -152,6 +155,14 @@ export function normalizeWechatConfig(raw: unknown): WechatConfig {
     historyLimit: clampInt(o.historyLimit, 2, 2000, d.historyLimit),
     overviewCount: clampInt(o.overviewCount, 1, 20, d.overviewCount),
     draftPrompt: rawPrompt.trim() ? rawPrompt : d.draftPrompt,
+    contactPersonas:
+      o.contactPersonas && typeof o.contactPersonas === 'object' && !Array.isArray(o.contactPersonas)
+        ? Object.fromEntries(
+            Object.entries(o.contactPersonas as Record<string, unknown>)
+              .filter(([k, v]) => typeof k === 'string' && typeof v === 'string' && v.trim().length > 0)
+              .map(([k, v]) => [k.trim(), (v as string).trim()]),
+          )
+        : {},
   };
 }
 
@@ -448,9 +459,27 @@ export function buildDraftMessages(
   return out;
 }
 
-/** 起草用的系统提示词：模板里的 {name} / {count} 替换为会话名与历史条数。 */
+/** 起草用的系统提示词：优先匹配联系人专属口吻，若无则回退到全局 draftPrompt。
+ *  模板里的 {name} / {count} 替换为会话名与历史条数。 */
 export function buildDraftSystemPrompt(cfg: WechatConfig, chat: WechatChatRef, messageCount: number): string {
-  return cfg.draftPrompt
+  let template = cfg.draftPrompt;
+  const personas = cfg.contactPersonas;
+  if (personas && typeof personas === 'object') {
+    if (chat.username && personas[chat.username]) {
+      template = personas[chat.username];
+    } else if (chat.chat && personas[chat.chat]) {
+      template = personas[chat.chat];
+    } else {
+      for (const [pattern, prompt] of Object.entries(personas)) {
+        if (pattern.includes('*') && matchChatRule(pattern, chat)) {
+          template = prompt;
+          break;
+        }
+      }
+    }
+  }
+
+  return template
     .replace(/\{name\}/g, chat.isGroup ? `${chat.chat}（群聊）` : chat.chat)
     .replace(/\{count\}/g, String(messageCount));
 }

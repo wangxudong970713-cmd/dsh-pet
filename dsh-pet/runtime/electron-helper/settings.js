@@ -194,9 +194,10 @@ function updateWechatEnabledState() {
   }
 }
 
-// 选中的名单集合
+// 选中的名单集合与联系人专属口吻映射
 const selectedIndividuals = new Set();
 const selectedGroups = new Set();
+const contactPersonas = {};
 let fetchedSessions = [];
 
 function renderBadges(type) {
@@ -215,13 +216,28 @@ function renderBadges(type) {
     for (const name of set) {
       const badge = document.createElement('span');
       badge.className = 'wechat-badge';
+      if (contactPersonas[name]) {
+        badge.classList.add('has-persona');
+      }
       badge.textContent = name;
+
+      const personaBtn = document.createElement('span');
+      personaBtn.className = 'badge-persona-btn';
+      personaBtn.textContent = ' 🎭';
+      personaBtn.title = contactPersonas[name] ? `专属口吻：\n${contactPersonas[name]}` : '点击配置专属起草口吻';
+      personaBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPersonaModal(name);
+      });
+      badge.appendChild(personaBtn);
+
       const close = document.createElement('span');
       close.className = 'badge-close';
       close.textContent = ' ×';
       close.title = '取消勾选';
       close.addEventListener('click', () => {
         set.delete(name);
+        delete contactPersonas[name];
         renderBadges(type);
         renderCandidates(type);
       });
@@ -469,6 +485,11 @@ function applyWechatForm(cfg) {
   const w = normalizeWechat(cfg);
   wechatEnabledInput.checked = w.enabled;
 
+  Object.keys(contactPersonas).forEach((k) => delete contactPersonas[k]);
+  if (w.contactPersonas && typeof w.contactPersonas === 'object') {
+    Object.assign(contactPersonas, w.contactPersonas);
+  }
+
   selectedIndividuals.clear();
   for (const item of w.individuals.list || []) {
     const t = String(item || '').trim();
@@ -543,6 +564,7 @@ function readWechatForm() {
     historyLimit: clampNum(wechatHistoryLimitInput.value, 2, 2000, WECHAT_DEFAULTS.historyLimit),
     overviewCount: clampNum(wechatOverviewCountInput.value, 1, 20, WECHAT_DEFAULTS.overviewCount),
     draftPrompt: wechatDraftPromptInput.value.trim() || WECHAT_DEFAULTS.draftPrompt,
+    contactPersonas: { ...contactPersonas },
   };
 }
 
@@ -988,6 +1010,121 @@ btnReset.addEventListener('click', () => {
     });
   }
 });
+
+// 联系人专属口吻弹窗交互
+let currentEditingPersonaName = '';
+const personaModal = document.getElementById('personaModal');
+const personaModalTitle = document.getElementById('personaModalTitle');
+const personaPromptInput = document.getElementById('personaPromptInput');
+const btnPersonaModalClose = document.getElementById('btnPersonaModalClose');
+const btnPersonaClear = document.getElementById('btnPersonaClear');
+const btnPersonaSave = document.getElementById('btnPersonaSave');
+
+const PERSONA_PRESETS = {
+  business: '你在替主人起草微信回复。对方是 {name}。要求：语气礼貌稳重、严谨高效，常用“收到”、“好的，辛苦了”、“晚点沟通”，不要多余废话。',
+  friend: '你在替主人起草微信回复。对方是 {name}。要求：随性自然，像多年死党随手打字，可用网络流行语，句末少用句号，多用空格断句，直接给答案或吐槽。',
+  gentle: '你在替主人起草微信回复。对方是 {name}。要求：口吻温柔、关切贴心，多表达理解和陪伴，语气柔和，字数简短。',
+  concise: '你在替主人起草微信回复。对方是 {name}。要求：极其简洁干脆，字数在 10 字以内，直奔主题，绝不客套。',
+};
+
+function openPersonaModal(name) {
+  currentEditingPersonaName = name;
+  if (personaModalTitle) personaModalTitle.textContent = `为「${name}」配置专属口吻`;
+  if (personaPromptInput) personaPromptInput.value = contactPersonas[name] || '';
+  if (personaModal) personaModal.style.display = 'flex';
+}
+
+function closePersonaModal() {
+  if (personaModal) personaModal.style.display = 'none';
+  currentEditingPersonaName = '';
+}
+
+if (btnPersonaModalClose) {
+  btnPersonaModalClose.addEventListener('click', closePersonaModal);
+}
+if (btnPersonaClear) {
+  btnPersonaClear.addEventListener('click', () => {
+    if (currentEditingPersonaName) {
+      delete contactPersonas[currentEditingPersonaName];
+      renderBadges('individual');
+      renderBadges('group');
+      closePersonaModal();
+    }
+  });
+}
+if (btnPersonaSave) {
+  btnPersonaSave.addEventListener('click', () => {
+    if (currentEditingPersonaName) {
+      const val = (personaPromptInput && personaPromptInput.value.trim()) || '';
+      if (val) {
+        contactPersonas[currentEditingPersonaName] = val;
+      } else {
+        delete contactPersonas[currentEditingPersonaName];
+      }
+      renderBadges('individual');
+      renderBadges('group');
+      closePersonaModal();
+    }
+  });
+}
+
+document.querySelectorAll('.persona-presets .chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    const key = chip.dataset.preset;
+    if (PERSONA_PRESETS[key] && personaPromptInput) {
+      personaPromptInput.value = PERSONA_PRESETS[key];
+    }
+  });
+});
+
+// 检查更新交互
+const btnCheckUpdate = document.getElementById('btnCheckUpdate');
+const updateStatusText = document.getElementById('updateStatusText');
+const updateDetailsBox = document.getElementById('updateDetailsBox');
+const updateVersionTitle = document.getElementById('updateVersionTitle');
+const updateReleaseNotes = document.getElementById('updateReleaseNotes');
+const btnGoDownload = document.getElementById('btnGoDownload');
+let remoteReleaseUrl = '';
+
+if (btnCheckUpdate && window.settingsBridge) {
+  btnCheckUpdate.addEventListener('click', async () => {
+    btnCheckUpdate.disabled = true;
+    updateStatusText.textContent = '⏳ 正在检查...';
+    updateStatusText.className = 'test-status loading';
+    updateDetailsBox.style.display = 'none';
+
+    try {
+      const res = await window.settingsBridge.checkUpdate({ force: true });
+      if (res && res.hasUpdate) {
+        updateStatusText.textContent = '✨ 发现新版本！';
+        updateStatusText.className = 'test-status success';
+        updateVersionTitle.textContent = `发现新版本：v${res.latestVersion} (当前 v${res.currentVersion})`;
+        updateReleaseNotes.textContent = res.releaseNotes || '请前往 Release 页面查看更新详情。';
+        remoteReleaseUrl = res.releaseUrl;
+        updateDetailsBox.style.display = 'block';
+      } else if (res && res.ok) {
+        updateStatusText.textContent = `✅ 当前已是最新版本 (v${res.currentVersion})`;
+        updateStatusText.className = 'test-status success';
+      } else {
+        updateStatusText.textContent = '❌ ' + (res?.message || '检查更新失败');
+        updateStatusText.className = 'test-status error';
+      }
+    } catch (e) {
+      updateStatusText.textContent = '❌ 检查异常: ' + (e.message || String(e));
+      updateStatusText.className = 'test-status error';
+    } finally {
+      btnCheckUpdate.disabled = false;
+    }
+  });
+}
+
+if (btnGoDownload) {
+  btnGoDownload.addEventListener('click', () => {
+    if (remoteReleaseUrl) {
+      window.open(remoteReleaseUrl, '_blank');
+    }
+  });
+}
 
 // 启动执行
 loadSettings();

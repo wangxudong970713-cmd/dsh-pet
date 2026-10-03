@@ -416,6 +416,22 @@
               <span class="slider"></span>
             </label>
           </div>
+
+          <div class="form-group" style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e2e8f0;">
+            <div class="label-with-val">
+              <span class="switch-label">软件版本与在线更新</span>
+              <span id="appVersionBadge" class="val-badge">v0.2.11</span>
+            </div>
+            <div class="test-row" style="margin-top: 6px;">
+              <button type="button" id="btnCheckUpdate" class="btn-secondary">🔍 检查更新</button>
+              <span id="updateStatusText" class="test-status"></span>
+            </div>
+            <div id="updateDetailsBox" style="display: none; margin-top: 8px; padding: 10px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;">
+              <div style="font-weight: 600; color: #166534; font-size: 13px;" id="updateVersionTitle">发现新版本！</div>
+              <div style="font-size: 11px; color: #15803d; margin: 4px 0 8px; white-space: pre-wrap; max-height: 100px; overflow-y: auto;" id="updateReleaseNotes"></div>
+              <button type="button" id="btnGoDownload" class="btn-primary" style="padding: 4px 12px; font-size: 12px;">前往下载更新</button>
+            </div>
+          </div>
         </section>
       </main>
 
@@ -427,6 +443,30 @@
           <button type="button" id="btnSave" class="btn-primary">💾 保存并生效</button>
         </div>
       </footer>
+    </div>
+
+    <!-- 联系人专属口吻弹窗 -->
+    <div id="personaModal" class="modal-backdrop" style="display: none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="personaModalTitle">联系人专属口吻</h3>
+          <button type="button" id="btnPersonaModalClose" class="btn-icon">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="persona-tips">为该联系人/群聊定制专属起草人设，留空则沿用全局默认 Prompt。</div>
+          <div class="quick-chips persona-presets">
+            <span class="chip" data-preset="business">🏢 商务干练</span>
+            <span class="chip" data-preset="friend">🍻 随性死党</span>
+            <span class="chip" data-preset="gentle">💖 温柔体贴</span>
+            <span class="chip" data-preset="concise">❄️ 极简短句</span>
+          </div>
+          <textarea id="personaPromptInput" rows="5" placeholder="输入为该联系人定制的起草提示词（支持 {name} / {count} 占位符）..."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="btnPersonaClear" class="btn-text">清空专属口吻</button>
+          <button type="button" id="btnPersonaSave" class="btn-primary">保存口吻</button>
+        </div>
+      </div>
     </div>
 
     <script src="./settings.js"></script>

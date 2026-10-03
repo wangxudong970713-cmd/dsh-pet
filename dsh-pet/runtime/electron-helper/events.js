@@ -470,24 +470,34 @@ async function maybeAutoDraft(sessions) {
   if (!draft) return;
   const image = await wechatStickerFor(target.lastMessage);
 
-  if (cfg.autoReply && window.petBridge && typeof petBridge.sendAutoReply === 'function') {
-    try {
-      const sendRes = await petBridge.sendAutoReply({ chat: target.chat, text: draft });
-      if (sendRes && sendRes.ok) {
-        for (const s of sprites) s.showWechatNotice('已自动回复「' + target.chat + '」：' + draft, image, draft);
+  if (cfg.autoReply) {
+    for (const s of sprites) {
+      if (typeof s.startAutoReplyCountdown === 'function') {
+        s.startAutoReplyCountdown({
+          targetChat: target.chat,
+          text: draft,
+          image,
+          countdownSec: 3,
+          autoTrigger: true,
+        });
       } else {
-        const rawErr = (sendRes && sendRes.error) || '发送失败';
-        let errMsg = rawErr;
-        if (rawErr.includes('WECHAT_NOT_FOUND')) errMsg = '未找到微信窗口，请确认微信已登录并在运行中';
-        else if (rawErr.includes('CLIPBOARD')) errMsg = '剪贴板操作失败';
-        for (const s of sprites) s.showWechatNotice('自动回复「' + target.chat + '」失败（' + errMsg + '）：' + draft, image, draft);
+        s.showWechatNotice('准备自动回复「' + target.chat + '」：' + draft, image, draft);
       }
-    } catch (e) {
-      for (const s of sprites) s.showWechatNotice('自动回复异常（' + (e.message || e) + '）：' + draft, image, draft);
     }
   } else {
-    // 第四参 = 可复制正文（只有草稿本身，不含「给「X」的草稿：」前缀）→ 点击气泡即复制
-    for (const s of sprites) s.showWechatNotice('给「' + target.chat + '」的草稿：' + draft, image, draft);
+    for (const s of sprites) {
+      if (typeof s.startAutoReplyCountdown === 'function') {
+        s.startAutoReplyCountdown({
+          targetChat: target.chat,
+          text: draft,
+          image,
+          countdownSec: 0,
+          autoTrigger: false,
+        });
+      } else {
+        s.showWechatNotice('给「' + target.chat + '」的草稿：' + draft, image, draft);
+      }
+    }
   }
 }
 

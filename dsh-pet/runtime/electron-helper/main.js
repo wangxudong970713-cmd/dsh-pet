@@ -42,6 +42,7 @@ const fsPromises = require('node:fs/promises');
 // 点击穿透兜底通道的纯判定（不依赖 Electron 的 forward 鼠标钩子；见文件头注释）
 const { decideWindowIgnore } = require('./pointer-target.js');
 const { standaloneService } = require('./standalone-service.js');
+const { UpdateChecker } = require('./update-checker.js');
 // 宿主存活判定（issue #56：宿主退出 → 管道断开 → 自己退，绝不弹框、绝不留僵尸）
 const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('./host-liveness.js');
 
@@ -521,6 +522,12 @@ async function handleBridgeRequest(request) {
     'access-control-allow-headers': '*',
   };
   if (resp.contentType) headers['content-type'] = resp.contentType;
+  if (resp.stream) {
+    headers['content-type'] = resp.contentType || 'text/event-stream';
+    headers['cache-control'] = 'no-cache';
+    headers['connection'] = 'keep-alive';
+    return new Response(resp.stream, { status: resp.status || 200, headers });
+  }
   if (resp.file) {
     try {
       const stat = await fsPromises.stat(resp.file);
@@ -609,20 +616,47 @@ function applyAutoStart(enabled) {
   }
 }
 
+const updateChecker = new UpdateChecker({
+  userDataDir: path.join(app.getPath('userData'), 'dsh-pet'),
+});
+let latestUpdateInfo = null;
+
+function getAppVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+    return pkg.version || '0.2.11';
+  } catch {
+    return '0.2.11';
+  }
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+  const items = [];
+  if (latestUpdateInfo && latestUpdateInfo.hasUpdate) {
+    items.push({
+      label: `✨ 发现新版本 v${latestUpdateInfo.latestVersion} (点击下载)`,
+      click: () => shell.openExternal(latestUpdateInfo.releaseUrl),
+    });
+    items.push({ type: 'separator' });
+  }
+  items.push(
+    { label: `🐾 桌宠 (dsh-pet v${getAppVersion()})`, enabled: false },
+    { type: 'separator' },
+    { label: '⚙️ 设置中心', click: () => openSettingsWindow() },
+    { label: '📍 回到初始位置', click: () => resetAllPetsPosition() },
+    { type: 'separator' },
+    { label: '❌ 退出', click: () => app.quit() },
+  );
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
 function createTray() {
   try {
     const iconPath = path.join(standaloneService.assetsRoot, 'pic', 'notify-done.png');
     tray = new Tray(iconPath);
-    const contextMenu = Menu.buildFromTemplate([
-      { label: '🐾 桌宠 (dsh-pet)', enabled: false },
-      { type: 'separator' },
-      { label: '⚙️ 设置中心', click: () => openSettingsWindow() },
-      { label: '📍 回到初始位置', click: () => resetAllPetsPosition() },
-      { type: 'separator' },
-      { label: '❌ 退出', click: () => app.quit() },
-    ]);
-    tray.setToolTip('dsh-pet 桌面宠物');
-    tray.setContextMenu(contextMenu);
+    updateTrayMenu();
+    tray.setToolTip(`dsh-pet 桌面宠物 v${getAppVersion()}`);
     tray.on('double-click', () => openSettingsWindow());
   } catch (e) {
     console.error('[dsh-pet] createTray failed:', e);
@@ -710,6 +744,32 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:test', async (event, params) => {
     return await standaloneService.testConnection(params);
   });
+  ipcMain.handle('update:check', async (event, opts = {}) => {
+    const info = await updateChecker.check(getAppVersion(), { force: Boolean(opts.force) });
+    if (info && info.hasUpdate) {
+      latestUpdateInfo = info;
+      updateTrayMenu();
+    }
+    return info;
+  });
+
+  // 启动 3 秒后异步静默检查更新
+  setTimeout(async () => {
+    try {
+      const info = await updateChecker.check(getAppVersion(), { force: false });
+      if (info && info.hasUpdate) {
+        latestUpdateInfo = info;
+        updateTrayMenu();
+        for (const win of windows.values()) {
+          if (!win.isDestroyed()) {
+            win.webContents.send('pet:new-version', info);
+          }
+        }
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }, 3000).unref?.();
 
   // ---- 微信联动：剪贴板与系统通知 ----
   // 渲染端是 file:// 页面（非 secure context，navigator.clipboard 不可用），复制只能走主进程。
@@ -796,25 +856,20 @@ app.whenReady().then(() => {
       lastError = (result && result.error) ? String(result.error) : '发送未响应';
       console.warn(`[wechat:auto-reply] 第 ${attempt} 次发送未成功: ${lastError}`);
 
-      // 微信未运行或完全未找到主窗口时，属于致命前置条件不满足，直接终止重试
-      if (lastError.includes('WECHAT_NOT_FOUND')) {
-        return {
-          ok: false,
-          error: '未找到电脑微信窗口，请确保微信已启动并登录',
-          attempts: attempt,
-        };
-      }
-
       if (attempt < MAX_RETRIES) {
-        // 退避延时：第1次失败等 600ms，第2次失败等 1200ms
+        // 退避延时：第1次失败等 600ms，第2次失败等 1200ms，为最小化/托盘唤醒预留时间
         const delay = attempt * 600;
         await new Promise((r) => setTimeout(r, delay));
       }
     }
 
+    const finalMsg = lastError.includes('WECHAT_NOT_FOUND')
+      ? '未找到电脑微信窗口，请确保微信已启动并登录'
+      : lastError;
+
     return {
       ok: false,
-      error: lastError,
+      error: finalMsg,
       attempts: MAX_RETRIES,
     };
   });

@@ -27,23 +27,25 @@ class MBI(ctypes.Structure):
 
 
 def _get_pids():
-    """返回所有 Weixin.exe 进程的 (pid, mem_kb) 列表，按内存降序"""
-    r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
-                       capture_output=True, text=True)
+    """返回所有微信进程 (Weixin.exe / WeChat.exe) 的 (pid, mem_kb) 列表，按内存降序"""
     pids = []
-    for line in r.stdout.strip().split('\n'):
-        if not line.strip():
-            continue
-        p = line.strip('"').split('","')
-        if len(p) >= 5:
-            pid = int(p[1])
-            mem = int(p[4].replace(',', '').replace(' K', '').strip() or '0')
-            pids.append((pid, mem))
+    for proc_name in ("Weixin.exe", "WeChat.exe"):
+        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {proc_name}", "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True)
+        for line in r.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            p = line.strip('"').split('","')
+            if len(p) >= 5:
+                pid = int(p[1])
+                mem = int(p[4].replace(',', '').replace(' K', '').strip() or '0')
+                if not any(item[0] == pid for item in pids):
+                    pids.append((pid, mem))
     if not pids:
-        raise RuntimeError("Weixin.exe 未运行")
+        raise RuntimeError("微信未运行 (未找到 Weixin.exe 或 WeChat.exe 进程)")
     pids.sort(key=lambda x: x[1], reverse=True)
     for pid, mem in pids:
-        print(f"[+] Weixin.exe PID={pid} ({mem // 1024}MB)")
+        print(f"[+] 微信 PID={pid} ({mem // 1024}MB)")
     return pids
 
 

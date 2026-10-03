@@ -277,6 +277,8 @@
       initBusy: false,
       draftBusy: false,
       copied: false,
+      sending: false,
+      sendSuccess: false,
       loading: false,
     };
 
@@ -491,8 +493,11 @@
       bDraft.disabled = p.draftBusy || !p.messages.length;
       const bCopy = button(p.copied ? '已复制 ✓' : '📋 复制', '', () => void doCopy());
       bCopy.disabled = !p.draft;
+      const bSend = button(p.sending ? '正在发送…' : (p.sendSuccess ? '已发送 ✓' : '🚀 快捷发送'), '', () => void doSend());
+      bSend.disabled = !p.draft || p.sending;
       acts.appendChild(bDraft);
       acts.appendChild(bCopy);
+      acts.appendChild(bSend);
       draftBox.appendChild(acts);
 
       if (p.draftErr) draftBox.appendChild(el('div', 'dsh-pet-wx-err', p.draftErr));
@@ -654,6 +659,35 @@
       render();
       if (ok && typeof options.onMessage === 'function') {
         options.onMessage({ title: '已复制', text: '回复已进剪贴板，去微信里粘贴吧~' });
+      }
+    }
+
+    async function doSend() {
+      const text = (p.draft || '').trim();
+      if (!text || !p.active) return;
+      p.sending = true;
+      p.draftErr = '';
+      render();
+      try {
+        if (window.petBridge && typeof window.petBridge.sendAutoReply === 'function') {
+          const res = await window.petBridge.sendAutoReply({ chat: p.active.chat, text });
+          if (res && res.ok) {
+            p.sendSuccess = true;
+            setTimeout(() => {
+              p.sendSuccess = false;
+              render();
+            }, 2000);
+          } else {
+            p.draftErr = '发送失败：' + ((res && res.error) || '未知错误');
+          }
+        } else {
+          p.draftErr = '当前环境不支持直接发送，请使用复制按钮手动粘贴发送';
+        }
+      } catch (e) {
+        p.draftErr = '发送异常：' + String(e && e.message ? e.message : e);
+      } finally {
+        p.sending = false;
+        render();
       }
     }
 

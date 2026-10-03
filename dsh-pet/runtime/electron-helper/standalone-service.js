@@ -387,6 +387,249 @@ class StandaloneService {
     throw new Error(formatFetchError(lastError));
   }
 
+  /** 调用 OpenAI 兼容接口，返回流式 SSE ReadableStream */
+  async callLlmStream(messages, systemPrompt, maxTokens = 256, opts = {}) {
+    const config = this.getMergedConfig();
+    const apiKey = config.apiKey ? String(config.apiKey).trim() : '';
+    if (!apiKey) {
+      throw new Error('未配置 API 密钥，请在设置中配置');
+    }
+
+    let baseUrl = config.baseUrl ? String(config.baseUrl).trim() : 'https://api.deepseek.com';
+    baseUrl = baseUrl.replace(/\/+$/, '');
+    if (!baseUrl.endsWith('/v1') && !baseUrl.includes('/chat/completions')) {
+      baseUrl = baseUrl + '/v1';
+    }
+    const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const model = config.model ? String(config.model).trim() : 'deepseek-chat';
+
+    const reqMessages = [];
+    if (systemPrompt) {
+      reqMessages.push({ role: 'system', content: systemPrompt });
+    }
+    reqMessages.push(...messages);
+
+    const timeoutMs =
+      Number.isFinite(Number(opts.timeoutMs)) && Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 60000;
+    const temperature = Number.isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.9;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let upstreamResp;
+    try {
+      upstreamResp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: reqMessages,
+          temperature,
+          max_tokens: maxTokens,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      throw new Error(formatFetchError(err));
+    }
+
+    if (!upstreamResp.ok) {
+      clearTimeout(timer);
+      const errText = await upstreamResp.text();
+      throw new Error(`API 响应错误 HTTP ${upstreamResp.status}: ${errText.slice(0, 150)}`);
+    }
+
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder('utf-8');
+
+    let inThinkTag = false;
+    let buffer = '';
+
+    const stream = new ReadableStream({
+      async start(controllerStream) {
+        clearTimeout(timer);
+        const reader = upstreamResp.body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              controllerStream.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controllerStream.close();
+              break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+              if (!line || line.startsWith(':')) continue;
+              if (line === 'data: [DONE]') {
+                controllerStream.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controllerStream.close();
+                return;
+              }
+              if (line.startsWith('data: ')) {
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr) continue;
+                try {
+                  const chunk = JSON.parse(jsonStr);
+                  const delta = chunk?.choices?.[0]?.delta;
+                  if (!delta) continue;
+
+                  // 1. 专有思考推理字段 (DeepSeek-R1 / Qwen reasoning_content)
+                  if (delta.reasoning_content) {
+                    const payload = JSON.stringify({ type: 'think', delta: delta.reasoning_content });
+                    controllerStream.enqueue(encoder.encode(`data: ${payload}\n\n`));
+                  }
+
+                  // 2. 正文及可能嵌入其中的 <think> 标签处理
+                  if (delta.content) {
+                    let content = delta.content;
+                    if (content.includes('<think>')) {
+                      inThinkTag = true;
+                      const parts = content.split('<think>');
+                      if (parts[0]) {
+                        controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', delta: parts[0] })}\n\n`));
+                      }
+                      content = parts[1] || '';
+                    }
+
+                    if (inThinkTag) {
+                      if (content.includes('</think>')) {
+                        inThinkTag = false;
+                        const parts = content.split('</think>');
+                        if (parts[0]) {
+                          controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'think', delta: parts[0] })}\n\n`));
+                        }
+                        controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'think_end' })}\n\n`));
+                        if (parts[1]) {
+                          controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', delta: parts[1] })}\n\n`));
+                        }
+                      } else if (content) {
+                        controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'think', delta: content })}\n\n`));
+                      }
+                    } else if (content) {
+                      controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'text', delta: content })}\n\n`));
+                    }
+                  }
+                } catch {
+                  // 单个格式残缺 chunk 忽略
+                }
+              }
+            }
+          }
+        } catch (e) {
+          controllerStream.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: e.message || String(e) })}\n\n`));
+          controllerStream.close();
+        }
+      },
+    });
+
+    return stream;
+  }
+
+  /** 发起流式对话 */
+  async chatWithPetStream(petId, userText) {
+    const config = this.getMergedConfig();
+    const apiKey = config.apiKey ? String(config.apiKey).trim() : '';
+    const encoder = new TextEncoder();
+    if (!apiKey) {
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: '未配置 API 密钥，请先在设置中配置' })}\n\n`));
+          c.enqueue(encoder.encode('data: [DONE]\n\n'));
+          c.close();
+        },
+      });
+    }
+
+    const pool = this.getMemePool();
+    const pet = (config.pets || []).find((p) => p.id === petId) || config.pets?.[0] || { name: '桌宠' };
+    let system =
+      (config.whisperPrompt || '你是主人桌面上的Q版小宠物，用简短可爱温柔的口吻说话。') +
+      ` 你的名字是“${pet.name || '桌宠'}”。`;
+
+    if (config.chatImageEnabled && pool.length > 0) {
+      const catalog = pool.map((m) => `- ${m.name}：${m.desc}`).join('\n');
+      system += `\n你可以根据需要配一张表情包（可选）。候选如下：\n${catalog}\n若配图，请在回复末尾附带 [图:名称] 标记，如“好呀！[图:开心]”。不需要时不用附带。`;
+    }
+
+    const rounds = Number(config.chatMemoryRounds || 5);
+    const mem = await this.readMemory();
+    const hist = ((mem[petId] && mem[petId].messages) || []).slice(-rounds * 2);
+
+    const messages = hist.map((m) => ({ role: m.role, content: m.content }));
+    messages.push({ role: 'user', content: userText });
+
+    let fullAnswer = '';
+    let rawStream;
+    try {
+      rawStream = await this.callLlmStream(messages, system, 512);
+    } catch (err) {
+      return new ReadableStream({
+        start(c) {
+          c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: err.message || String(err) })}\n\n`));
+          c.enqueue(encoder.encode('data: [DONE]\n\n'));
+          c.close();
+        },
+      });
+    }
+
+    const reader = rawStream.getReader();
+    const decoder = new TextDecoder('utf-8');
+    const self = this;
+
+    return new ReadableStream({
+      async start(controller) {
+        let buffer = '';
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              const parsed = config.chatImageEnabled ? self.extractChatImage(fullAnswer, pool) : { text: fullAnswer };
+              if (parsed.image) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'meme', name: parsed.image })}\n\n`));
+              }
+              await self.appendMemory(petId, userText, parsed.text);
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+              break;
+            }
+
+            controller.enqueue(value);
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const s = line.slice(6).trim();
+                if (s && s !== '[DONE]') {
+                  try {
+                    const item = JSON.parse(s);
+                    if (item.type === 'text' && item.delta) {
+                      fullAnswer += item.delta;
+                    }
+                  } catch {}
+                }
+              }
+            }
+          }
+        } catch (err) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: err.message || String(err) })}\n\n`));
+          controller.close();
+        }
+      },
+    });
+  }
+
   /** 生成碎碎念 */
   async generateWhisper(petId) {
     const config = this.getMergedConfig();
@@ -983,6 +1226,10 @@ class StandaloneService {
             contentType: 'application/json',
             body: JSON.stringify({ ok: false, reason: 'bad-request', message: '消息为空' }),
           };
+        }
+        if (parsed.searchParams.get('stream') === '1') {
+          const stream = await this.chatWithPetStream(petId, text);
+          return { status: 200, contentType: 'text/event-stream', stream };
         }
         const res = await this.chatWithPet(petId, text);
         return { status: 200, contentType: 'application/json', body: JSON.stringify(res) };

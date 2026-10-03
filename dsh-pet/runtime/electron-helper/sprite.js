@@ -124,6 +124,19 @@ class PetSprite {
     //   光标移到输入框（不在身体命中区）就会被 onMouseMove 翻回穿透，点击全被透传）
     this.chatClose = null;
     this.chatOpen = false;
+    // 流式对话打字机与思考状态
+    this.chatStreamActive = false;
+    this.chatStreamThinking = '';
+    this.chatStreamThinkingDone = false;
+    this.chatStreamText = '';
+    this.chatStreamImage = '';
+    // 微信自动回复安全倒计时状态
+    this.countdownActive = false;
+    this.countdownSec = 0;
+    this.countdownTarget = null;
+    this.countdownText = '';
+    this.countdownTimer = null;
+    this.countdownPaused = false;
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -181,6 +194,21 @@ class PetSprite {
       'click',
       (e) => {
         if (!this.whisperCopy) return;
+        const targetBtn = e.target && e.target.closest ? e.target.closest('button') : null;
+        if (targetBtn) {
+          if (targetBtn.classList.contains('pet-bub-btn-cancel')) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.cancelAutoReplyCountdown();
+            return;
+          }
+          if (targetBtn.classList.contains('pet-bub-btn-send')) {
+            e.preventDefault();
+            e.stopPropagation();
+            this.executeAutoReply(this.countdownTarget, this.whisperCopy);
+            return;
+          }
+        }
         e.preventDefault();
         e.stopPropagation();
         this.copyDraft();
@@ -1179,6 +1207,72 @@ class PetSprite {
   // 弹窗跟随宠物：基准是**身体命中区** this.hit（与气泡同一定位源——桌宠在视频中间，
   // 视频框右上角 ≠ 宠物右上角），取身体右上角，超出视口自动夹回（窗口右侧外扩区容纳）；
   // 弹窗是窗口内 DOM，期间整窗保持可交互（可点输入框），关闭后恢复命中区穿透。
+  startChatStream() {
+    this.stopMove();
+    this.chatStreamActive = true;
+    this.chatStreamThinking = '';
+    this.chatStreamThinkingDone = false;
+    this.chatStreamText = '';
+    this.chatStreamImage = '';
+    this.whisperOn = true;
+    this.whisperView = null;
+    this.whisperImage = '';
+    this.whisperCopy = '';
+    if (this.whisperTimer !== null) {
+      window.clearTimeout(this.whisperTimer);
+      this.whisperTimer = null;
+    }
+    const pool = this.animations.events?.whisper;
+    if (pool && pool.length > 0) {
+      const name = S.pickSlot(S.pick(pool, this.anim), this.anim);
+      this.playOnce(name);
+    }
+    this.renderBubble();
+  }
+
+  updateChatStream(delta) {
+    if (!this.chatStreamActive && !this.whisperOn) return;
+    if (delta.think) {
+      this.chatStreamThinking += delta.think;
+    }
+    if (delta.thinkEnd) {
+      this.chatStreamThinkingDone = true;
+    }
+    if (delta.text) {
+      if (!this.chatStreamThinkingDone && this.chatStreamThinking) {
+        this.chatStreamThinkingDone = true;
+      }
+      this.chatStreamText += delta.text;
+    }
+    if (delta.meme) {
+      this.chatStreamImage = delta.meme;
+    }
+    if (delta.error) {
+      this.chatStreamActive = false;
+      this.chatStreamText = '对话出错：' + delta.error;
+      this.renderBubble();
+      this.whisperTimer = window.setTimeout(() => {
+        this.whisperOn = false;
+        this.renderBubble();
+      }, BUBBLE_DURATION_MS);
+      return;
+    }
+    if (delta.done) {
+      this.chatStreamActive = false;
+      this.renderBubble();
+      if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
+      this.whisperTimer = window.setTimeout(() => {
+        this.whisperOn = false;
+        this.chatStreamText = '';
+        this.chatStreamThinking = '';
+        this.chatStreamImage = '';
+        this.renderBubble();
+      }, BUBBLE_DURATION_MS);
+      return;
+    }
+    this.renderBubble();
+  }
+
   showChatFromMenu() {
     if (this.chatClose) {
       this.chatClose();
@@ -1192,6 +1286,12 @@ class PetSprite {
       y: Math.max(4, this.hit.getBoundingClientRect().top + 6),
       // 弹窗同菜单：只允许在「窗口 ∩ 工作区」内显示，贴边时不被屏幕裁掉（#41）
       clamp: this.visibleClampRect(),
+      onStreamStart: () => {
+        this.startChatStream();
+      },
+      onStreamDelta: (delta) => {
+        this.updateChatStream(delta);
+      },
       onReply: (reply, image) => {
         console.info('[dsh-pet] 对话回复 pet=' + this.pet.id + '「' + reply + '」' + (image ? ' [' + image + ']' : ''));
         this.showWhisper(reply, image); // 复用碎碎念链路：随机说话动画 + 气泡 10s（含配图）
@@ -1268,12 +1368,73 @@ class PetSprite {
   // 气泡在窗口余量区，不放行就会被命中区判定翻回穿透 → 气泡看得见、点不动。
   onBubbleCopyHover(on) {
     const next = !!on && !!this.whisperCopy && this.whisperOn;
+    if (this.countdownActive) {
+      this.countdownPaused = !!on;
+    }
     if (next === this.bubbleCopyHover) return;
     this.bubbleCopyHover = next;
     window.__dshPetDebug.bubbleCopyHover = next;
     this.syncInputBusy();
     if (next) this.setInteractive(true);
     else if (!this.menuOpen && !this.chatOpen && !this.wechatOpen) this.setInteractive(false);
+  }
+
+  startAutoReplyCountdown({ targetChat, text, image, countdownSec = 3, autoTrigger = true }) {
+    this.stopAutoReplyCountdown();
+    this.countdownActive = !!autoTrigger;
+    this.countdownSec = countdownSec;
+    this.countdownTarget = targetChat;
+    this.countdownText = text;
+    this.countdownPaused = false;
+
+    const noticeText = (autoTrigger ? `准备自动回复「${targetChat}」：` : `给「${targetChat}」的草稿：`) + text;
+    this.showWechatNotice(noticeText, image, text);
+
+    if (autoTrigger && countdownSec > 0) {
+      this.countdownTimer = window.setInterval(() => {
+        if (this.countdownPaused) return;
+        this.countdownSec -= 1;
+        if (this.countdownSec <= 0) {
+          this.stopAutoReplyCountdown();
+          this.executeAutoReply(targetChat, text);
+        } else {
+          this.renderBubble();
+        }
+      }, 1000);
+    }
+  }
+
+  stopAutoReplyCountdown() {
+    if (this.countdownTimer !== null) {
+      window.clearInterval(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    this.countdownActive = false;
+  }
+
+  cancelAutoReplyCountdown() {
+    this.stopAutoReplyCountdown();
+    this.renderBubble();
+    console.log('[dsh-pet] 用户已取消自动回复发送');
+  }
+
+  async executeAutoReply(targetChat, text) {
+    this.stopAutoReplyCountdown();
+    if (!window.petBridge || typeof petBridge.sendAutoReply !== 'function') {
+      this.showWechatNotice(`自动回复失败（环境未提供接口）：${text}`, '', text);
+      return;
+    }
+    try {
+      const res = await petBridge.sendAutoReply({ chat: targetChat, text });
+      if (res && res.ok) {
+        this.showWechatNotice(`已自动发送至「${targetChat}」✓`, '', text);
+      } else {
+        const rawErr = (res && res.error) || '发送未响应';
+        this.showWechatNotice(`发送给「${targetChat}」失败（${rawErr}）`, '', text);
+      }
+    } catch (e) {
+      this.showWechatNotice(`发送异常（${e && e.message ? e.message : e}）`, '', text);
+    }
   }
 
   // 点击草稿气泡 = 复制文本到剪贴板（**只写剪贴板**：没有任何发送到微信的路径）。
@@ -1327,6 +1488,35 @@ class PetSprite {
       window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
       return;
     }
+    if (this.whisperOn && (this.chatStreamActive || this.chatStreamText || this.chatStreamThinking)) {
+      this.bubble.innerHTML = '';
+      if (this.chatStreamImage) {
+        const streamMemeImg = S.createMemeImage(this.chatStreamImage, BASE);
+        if (streamMemeImg) this.bubble.appendChild(streamMemeImg);
+      }
+      if (this.chatStreamThinking) {
+        const details = document.createElement('details');
+        details.className = 'pet-think-fold';
+        if (!this.chatStreamThinkingDone) details.open = true;
+        const summary = document.createElement('summary');
+        summary.className = 'pet-think-summary';
+        summary.textContent = this.chatStreamThinkingDone ? '💭 已深度思考 (点击展开)' : '💭 思考中…';
+        const bodyDiv = document.createElement('div');
+        bodyDiv.className = 'pet-think-body';
+        bodyDiv.textContent = this.chatStreamThinking;
+        details.appendChild(summary);
+        details.appendChild(bodyDiv);
+        this.bubble.appendChild(details);
+      }
+      const line = document.createElement('div');
+      line.className = 'pet-bub-row';
+      line.textContent = this.chatStreamText || (this.chatStreamActive && !this.chatStreamThinking ? '…' : '');
+      this.bubble.appendChild(line);
+      this.bubble.classList.add('is-on');
+      this.bubble.classList.add('is-whisper');
+      window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
+      return;
+    }
     if (this.whisperOn && this.whisperView) {
       this.bubble.innerHTML = '';
       // 配图（shared 生成的 <img> + 共用样式）：先看图再读话，符合"配图"的阅读顺序
@@ -1335,12 +1525,34 @@ class PetSprite {
       line.className = 'pet-bub-row';
       line.textContent = this.whisperView[0]?.text ?? '';
       this.bubble.appendChild(line);
-      // 草稿气泡：加一行提示（点击气泡即复制）；复制成功后 1.5s 内改显「已复制 ✓」
+      // 草稿气泡：提供复制、安全倒计时与快速发送操作
       if (this.whisperCopy) {
-        const hint = document.createElement('div');
-        hint.className = 'pet-bub-copy';
-        hint.textContent = this.bubbleCopyDone ? '已复制 ✓' : '点击复制';
-        this.bubble.appendChild(hint);
+        const actions = document.createElement('div');
+        actions.className = 'pet-bub-actions';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'pet-bub-btn pet-bub-btn-copy';
+        copyBtn.textContent = this.bubbleCopyDone ? '已复制 ✓' : '📋 复制';
+        actions.appendChild(copyBtn);
+
+        if (this.countdownActive) {
+          const sendBtn = document.createElement('button');
+          sendBtn.className = 'pet-bub-btn send pet-bub-btn-send';
+          sendBtn.textContent = `🚀 发送 (${this.countdownSec}s)`;
+          actions.appendChild(sendBtn);
+
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'pet-bub-btn cancel pet-bub-btn-cancel';
+          cancelBtn.textContent = '❌ 取消';
+          actions.appendChild(cancelBtn);
+        } else if (this.countdownTarget) {
+          const sendBtn = document.createElement('button');
+          sendBtn.className = 'pet-bub-btn send pet-bub-btn-send';
+          sendBtn.textContent = '🚀 发送';
+          actions.appendChild(sendBtn);
+        }
+
+        this.bubble.appendChild(actions);
         this.bubble.classList.add('is-copyable');
       }
       this.bubble.classList.add('is-on');
